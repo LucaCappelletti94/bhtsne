@@ -1,0 +1,11 @@
+[package]
+name = "demo-app"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+demo-worker = { path = "../worker" }
+dioxus = { version = "0.7", features = ["web"] }
+gloo-worker.workspace = true

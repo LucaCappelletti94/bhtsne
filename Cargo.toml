@@ -1,3 +1,14 @@
+[workspace]
+members = ["demo/app", "demo/worker"]
+
+[workspace.dependencies]
+gloo-worker = "0.6"
+serde = { version = "1", features = ["derive"] }
+# The demo worker bundle is post-processed with the wasm-bindgen CLI installed on
+# the machine, whose version must match the crate version exactly. Keep this pin
+# in sync with the output of `wasm-bindgen --version`.
+wasm-bindgen = "=0.2.121"
+
 [package]
 authors = ["frjnn <f.iannelli.francesco229@gmail.com>"]
 categories = ["algorithms", "science", "visualization"]

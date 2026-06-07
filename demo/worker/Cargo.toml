@@ -1,0 +1,17 @@
+[package]
+name = "demo-worker"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+bhtsne = { path = "../..", default-features = false, features = ["wasm_js"] }
+console_error_panic_hook = "0.1"
+gloo-worker.workspace = true
+serde.workspace = true
+wasm-bindgen.workspace = true
+
+[[bin]]
+name = "tsne_worker"
+path = "src/bin/tsne_worker.rs"
