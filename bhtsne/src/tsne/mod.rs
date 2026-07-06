@@ -1,7 +1,7 @@
 pub(super) mod fft;
 pub(super) mod interpolation;
 pub(super) mod spectral;
-pub(super) mod vptree;
+pub(crate) mod vptree;
 
 use std::{
     iter::Sum,
@@ -52,56 +52,10 @@ pub(super) struct GradientStep<T> {
 ///
 /// If the perplexity is too large.
 #[inline]
-pub(super) fn check_perplexity<T: Float + AsPrimitive<usize>>(perplexity: &T, n_samples: &usize) {
+pub(crate) fn check_perplexity<T: Float + AsPrimitive<usize>>(perplexity: &T, n_samples: &usize) {
     if n_samples - 1 < 3 * perplexity.as_() {
         panic!("error: the provided perplexity is too large for the number of data points.\n");
     }
-}
-
-/// Prepares the buffers necessary to the computation. Allocates memory freed by `clear_buffers`.
-///
-/// # Arguments
-///
-/// * `y` - embedding.
-///
-/// * `dy` - gradient.
-///
-/// * `uy` - momentum buffer.
-///
-/// * `gains` - gains.
-pub(super) fn prepare_buffers<T: Float + Send + Sync>(
-    y: &mut Vec<T>,
-    dy: &mut Vec<T>,
-    uy: &mut Vec<T>,
-    gains: &mut Vec<T>,
-    grad_entries: usize,
-) {
-    // Prepares the buffers.
-    y.resize(grad_entries, T::zero()); // Embeddings.
-    dy.resize(grad_entries, T::zero()); // Gradient.
-    uy.resize(grad_entries, T::zero()); // Momentum buffer.
-    gains.resize(grad_entries, T::one()); // Gains.
-}
-
-/// Empties the buffers after the termination of the algorithm. Frees memory allocated by
-/// `prepare_buffers`.
-///
-/// # Arguments
-///
-/// * `dy` - gradient.
-///
-/// * `uy` - momentum buffer.
-///
-/// * `gains` - gains.
-pub(super) fn clear_buffers<T: Float + Send + Sync>(
-    dy: &mut Vec<T>,
-    uy: &mut Vec<T>,
-    gains: &mut Vec<T>,
-) {
-    // Empties the buffers.
-    *dy = Vec::new(); // Gradient.
-    *uy = Vec::new(); // Momentum buffer.
-    *gains = Vec::new(); // Gains.
 }
 
 /// Returns the source of randomness used by the crate. On targets where an entropy
@@ -198,7 +152,7 @@ pub(super) fn compute_pairwise_distance_matrix<'a, T, U, F, G>(
 /// * `distances_row` - row of the distance matrix relative to the sample.
 ///
 /// * `perplexity` - given perplexity value.
-pub(super) fn search_beta<T>(p_values_row: &mut [T], distances_row: &[T], perplexity: &T)
+pub(crate) fn search_beta<T>(p_values_row: &mut [T], distances_row: &[T], perplexity: &T)
 where
     T: Send + Sync + Copy + Float + Sum + MulAssign + DivAssign,
 {
@@ -281,7 +235,7 @@ where
 /// * `p_values` - values of the P distribution.
 ///
 /// * `early_exaggeration` - factor the P distribution is multiplied by during the early phase.
-pub(super) fn normalize_p_values<T: Float + Send + Sync + MulAssign + Sum>(
+pub(crate) fn normalize_p_values<T: Float + Send + Sync + MulAssign + Sum>(
     p_values: &mut [T],
     early_exaggeration: T,
 ) {
@@ -303,7 +257,7 @@ pub(super) fn normalize_p_values<T: Float + Send + Sync + MulAssign + Sum>(
 /// * `n_samples` - number of samples.
 ///
 /// * `n_neighbors` - number of nearest neighbors to consider.
-pub(super) fn symmetrize_sparse_matrix<T>(
+pub(crate) fn symmetrize_sparse_matrix<T>(
     sym_p_rows: &mut Vec<usize>,
     sym_p_columns: &mut Vec<u32>,
     mut p_columns: Vec<u32>,
@@ -403,6 +357,67 @@ pub(super) fn symmetrize_sparse_matrix<T>(
     *p_values = sym_val_p;
     *sym_p_rows = sym_row_p;
     *sym_p_columns = sym_col_p;
+}
+
+/// Symmetrizes a variable-width conditional graph held in CSR form into the symmetric joint
+/// `P_ij = (p(j|i) + p(i|j)) / 2`. For each directed entry `(i -> j, v)` it adds `v / 2` to both
+/// `(i, j)` and `(j, i)`, so a pair present in only one direction still yields a symmetric edge.
+/// The output rows are column-sorted.
+///
+/// This is the counterpart of [`symmetrize_sparse_matrix`] for the pooled, variable-width
+/// conditional produced by [`AffinitiesBuilder`]. The fixed-width routine is kept for the
+/// single-view path, whose column ordering the round-trip tests pin.
+///
+/// # Arguments
+///
+/// * `rows` - CSR row offsets of the conditional, length `n_samples + 1`.
+///
+/// * `columns` - CSR column indices.
+///
+/// * `values` - conditional values aligned with `columns`.
+///
+/// [`AffinitiesBuilder`]: crate::AffinitiesBuilder
+pub(crate) fn symmetrize_csr<T: Float + AddAssign>(
+    rows: &[usize],
+    columns: &[u32],
+    values: &[T],
+) -> (Vec<usize>, Vec<u32>, Vec<T>) {
+    let n_samples = rows.len().saturating_sub(1);
+    let half = T::from(0.5).unwrap();
+
+    // Accumulate each row's half-edges keyed by column, summing duplicates.
+    let mut accumulators: Vec<Vec<(u32, T)>> = vec![Vec::new(); n_samples];
+    let push =
+        |acc: &mut Vec<(u32, T)>, col: u32, value: T| match acc.iter_mut().find(|(c, _)| *c == col)
+        {
+            Some((_, v)) => *v += value,
+            None => acc.push((col, value)),
+        };
+
+    for i in 0..n_samples {
+        for entry in rows[i]..rows[i + 1] {
+            let j = columns[entry];
+            let contribution = values[entry] * half;
+            push(&mut accumulators[i], j, contribution);
+            push(&mut accumulators[j as usize], i as u32, contribution);
+        }
+    }
+
+    let total: usize = accumulators.iter().map(Vec::len).sum();
+    let mut out_rows: Vec<usize> = Vec::with_capacity(n_samples + 1);
+    let mut out_columns: Vec<u32> = Vec::with_capacity(total);
+    let mut out_values: Vec<T> = Vec::with_capacity(total);
+    out_rows.push(0);
+    for mut acc in accumulators {
+        acc.sort_unstable_by_key(|(c, _)| *c);
+        for (col, value) in acc {
+            out_columns.push(col);
+            out_values.push(value);
+        }
+        out_rows.push(out_columns.len());
+    }
+
+    (out_rows, out_columns, out_values)
 }
 
 /// Updates the embedding.

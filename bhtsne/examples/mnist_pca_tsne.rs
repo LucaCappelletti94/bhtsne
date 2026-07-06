@@ -13,7 +13,7 @@ use npyz::npz::NpzArchive;
 
 use plotters::prelude::*;
 
-use bhtsne::tSNE;
+use bhtsne::{Affinities, TsneBuilder};
 
 const PCA_DIMS: usize = 20;
 const PERPLEXITY: f64 = 30.0;
@@ -49,8 +49,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Loaded {n_samples} samples x {PCA_DIMS} PCA components");
 
     let t1 = Instant::now();
-    let mut tsne: tSNE<f64, &[f32]> = tSNE::new(&rows);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&rows, PERPLEXITY, |a: &&[f32], b: &&[f32]| {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| {
+                let d = (*x as f64) - (*y as f64);
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt()
+    });
+
+    let fitted = TsneBuilder::<f64, &[f32], 2>::new(&rows)
         .spectral_init()
         .epochs(EPOCHS)
         .epoch_callback(|epoch, _embedding| {
@@ -58,25 +68,17 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("  epoch {epoch}/{EPOCHS}");
             }
         })
-        .barnes_hut(THETA, |a, b| {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, y)| {
-                    let d = (*x as f64) - (*y as f64);
-
-                    d * d
-                })
-                .sum::<f64>()
-                .sqrt()
-        });
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
     let tsne_ms = t1.elapsed().as_secs_f64() * 1000.0;
 
-    let embedding = tsne.embedding();
-    let kl = tsne.kl_divergence().unwrap_or(f64::NAN);
+    let embedding = fitted.embedding().to_vec();
+    let kl = fitted.kl_divergence();
 
     println!("t-SNE done: KL divergence {kl:.4}");
     let csv_out = "mnist_pca20_tsne_spectral.csv";
-    tsne.write_csv(csv_out)?;
+    fitted.write_csv(csv_out)?;
     println!("Embedding written to {csv_out} ({n_samples} rows, 2 columns)");
 
     let png_out = "mnist_pca20_tsne_spectral.png";

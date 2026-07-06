@@ -7,54 +7,70 @@ use std::{
 
 use num_traits::Float;
 
-use crate::tSNE;
+use crate::{FittedBhtsne, FittedExact, FittedFitSne};
 
-impl<'data, T, U, const D: usize> tSNE<'data, T, U, D>
+/// Writes a row-major embedding to a csv file. If `D` is 2 or 3 the file gets simple headers
+/// (`x, y` or `x, y, z`); higher dimensionalities are written without headers.
+fn write_embedding_csv<T, const D: usize>(embedding: &[T], path: &str) -> Result<(), Box<dyn Error>>
+where
+    T: Float + ToString,
+{
+    let mut writer = ::csv::Writer::from_path(path)?;
+    let to_write: Vec<String> = embedding.iter().map(|&el| el.to_string()).collect();
+    match D {
+        2 => writer.write_record(["x", "y"])?,
+        3 => writer.write_record(["x", "y", "z"])?,
+        _ => (),
+    }
+    for record in to_write.chunks(D) {
+        writer.write_record(record)?;
+    }
+    writer.flush()?;
+    Ok(())
+}
+
+impl<'d, T, U, const D: usize> FittedBhtsne<'d, T, U, D>
 where
     T: Send + Sync + Float + Sum + DivAssign + MulAssign + AddAssign + SubAssign,
     U: Send + Sync,
 {
-    /// Writes the embedding to a csv file. If the embedding space dimensionality is either equal to
-    /// 2 or 3 the resulting csv file will have some simple headers:
-    ///
-    /// * x, y for 2 dimensions.
-    ///
-    /// * x, y, z for 3 dimensions.
-    ///
-    /// # Arguments
-    ///
-    /// * `file_path` - path of the file to write the embedding to.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error is something goes wrong during the I/O operations.
-    pub fn write_csv(&mut self, path: &str) -> Result<&mut Self, Box<dyn Error>>
+    /// Writes the fitted embedding to a csv file. Adds `x, y` or `x, y, z` headers for `D` in
+    /// `2..=3`, no headers otherwise.
+    pub fn write_csv(&self, path: &str) -> Result<&Self, Box<dyn Error>>
     where
         T: Float + ToString,
     {
-        let mut writer = csv::Writer::from_path(path)?;
+        write_embedding_csv::<T, D>(self.embedding(), path)?;
+        Ok(self)
+    }
+}
 
-        // String-ify the embedding.
-        let to_write = self
-            .y
-            .iter()
-            .map(|&el| el.to_string())
-            .collect::<Vec<String>>();
+impl<'d, T, U, const D: usize> FittedFitSne<'d, T, U, D>
+where
+    T: Send + Sync + Float + Sum + DivAssign + MulAssign + AddAssign + SubAssign,
+    U: Send + Sync,
+{
+    /// Writes the fitted embedding to a csv file, matching [`FittedBhtsne::write_csv`].
+    pub fn write_csv(&self, path: &str) -> Result<&Self, Box<dyn Error>>
+    where
+        T: Float + ToString,
+    {
+        write_embedding_csv::<T, D>(self.embedding(), path)?;
+        Ok(self)
+    }
+}
 
-        // Write headers.
-        match D {
-            2 => writer.write_record(["x", "y"])?,
-            3 => writer.write_record(["x", "y", "z"])?,
-            _ => (), // Write no headers for embedding dimensions greater that 3.
-        }
-        // Write records.
-        for record in to_write.chunks(D) {
-            writer.write_record(record)?
-        }
-        // Final flush.
-        writer.flush()?;
-
-        // Everything went smooth.
+impl<'d, T, U, const D: usize> FittedExact<'d, T, U, D>
+where
+    T: Send + Sync + Float + Sum + DivAssign + MulAssign + AddAssign + SubAssign,
+    U: Send + Sync,
+{
+    /// Writes the fitted embedding to a csv file, matching [`FittedBhtsne::write_csv`].
+    pub fn write_csv(&self, path: &str) -> Result<&Self, Box<dyn Error>>
+    where
+        T: Float + ToString,
+    {
+        write_embedding_csv::<T, D>(self.embedding(), path)?;
         Ok(self)
     }
 }

@@ -4,12 +4,13 @@ use rand::{SeedableRng, rngs::StdRng};
 
 use rand_distr::{Distribution, Normal};
 
-use bhtsne::tSNE;
+use bhtsne::{Affinities, TsneBuilder};
 
 const DIM: usize = 50;
 const K: usize = 10;
 const SEED: u64 = 123456;
 const THETA: f32 = 0.5;
+const PERPLEXITY: f32 = 30.0;
 const SIZES: &[usize] = &[100_000, 200_000, 500_000, 1_000_000, 2_000_000];
 
 /// Euclidean distance.
@@ -51,29 +52,26 @@ fn main() {
         let data = blobs(n, SEED);
         let rows: Vec<&[f32]> = data.chunks_exact(DIM).collect();
 
-        // Build the affinity graph once.
-        let aff = {
-            let mut warm: tSNE<f32, &[f32]> = tSNE::new(&rows);
-            warm.perplexity(30.0).epochs(0).fit_sne(|a, b| euclid(a, b));
+        // Build the affinity graph once and reuse for both fit strategies.
+        let aff = Affinities::from_metric(&rows, PERPLEXITY, |a, b| euclid(a, b));
 
-            warm.affinities()
-                .expect("should have pre-computed affinities")
-        };
-
-        // Measures the fitting loop.
+        // Measures the fit_sne (FFT interpolated) optimisation loop.
         let start_fit_sne = Instant::now();
-        tSNE::<f32, _>::new(&rows)
-            .with_affinities(aff.clone())
+        TsneBuilder::<f32, _>::new(&rows)
             .epochs(1000)
-            .fit_sne(|x, y| euclid(x, y));
+            .with_affinities(aff.clone())
+            .fit_sne()
+            .fit();
         let end_fit_sne = start_fit_sne.elapsed().as_secs_f64();
 
-        let start_bh_tnse = Instant::now();
-        tSNE::<f32, _>::new(&rows)
-            .with_affinities(aff.clone())
+        // Measures the Barnes-Hut optimisation loop.
+        let start_bh_tsne = Instant::now();
+        TsneBuilder::<f32, _>::new(&rows)
             .epochs(1000)
-            .barnes_hut(THETA, |x, y| euclid(x, y));
-        let end_bh_tsne = start_bh_tnse.elapsed().as_secs_f64();
+            .with_affinities(aff)
+            .bhtsne(THETA)
+            .fit();
+        let end_bh_tsne = start_bh_tsne.elapsed().as_secs_f64();
 
         println!(
             "{n:>8}  {end_fit_sne:>11.1}  {end_bh_tsne:>11.1}  {:>6.2}x",

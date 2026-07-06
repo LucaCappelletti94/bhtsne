@@ -11,7 +11,7 @@ use criterion::{
     BenchmarkGroup, BenchmarkId, Criterion, criterion_group, criterion_main, measurement::WallTime,
 };
 
-use bhtsne::tSNE;
+use bhtsne::{Affinities, TsneBuilder};
 
 use common::{Scalar, brute_force_neighbors, cast, lcg, sq_euclidean};
 
@@ -29,11 +29,15 @@ fn bench_exact<T: Scalar>(group: &mut BenchmarkGroup<'_, WallTime>, dtype: &str)
             let id = BenchmarkId::new(format!("{dtype}/n{n}"), epochs);
             group.bench_with_input(id, &epochs, |b, &e| {
                 b.iter(|| {
-                    let mut tsne: tSNE<T, &[T]> = tSNE::new(&samples);
-                    tsne.perplexity(cast(PERPLEXITY))
+                    let affinities = Affinities::from_metric(&samples, cast(PERPLEXITY), |a, b| {
+                        sq_euclidean(a, b)
+                    });
+                    let fitted = TsneBuilder::<T, &[T], 2>::new(&samples)
                         .epochs(e)
-                        .exact(|a, b| sq_euclidean(a, b));
-                    black_box(tsne.embedding());
+                        .with_affinities(affinities)
+                        .exact()
+                        .fit();
+                    black_box(fitted.embedding().to_vec());
                 });
             });
         }
@@ -51,11 +55,14 @@ fn bench_barnes_hut<T: Scalar>(group: &mut BenchmarkGroup<'_, WallTime>, dtype: 
             let id = BenchmarkId::new(format!("{dtype}/n{n}"), epochs);
             group.bench_with_input(id, &epochs, |b, &e| {
                 b.iter(|| {
-                    let mut tsne: tSNE<T, &[T]> = tSNE::new(&samples);
-                    tsne.perplexity(cast(PERPLEXITY))
+                    let affinities =
+                        Affinities::from_neighbors(black_box(&neighbors), cast(PERPLEXITY));
+                    let fitted = TsneBuilder::<T, &[T], 2>::new(&samples)
                         .epochs(e)
-                        .barnes_hut_with_neighbors(cast(THETA), black_box(&neighbors));
-                    black_box(tsne.embedding());
+                        .with_affinities(affinities)
+                        .bhtsne(cast(THETA))
+                        .fit();
+                    black_box(fitted.embedding().to_vec());
                 });
             });
         }
@@ -73,11 +80,14 @@ fn bench_fit_sne<T: Scalar>(group: &mut BenchmarkGroup<'_, WallTime>, dtype: &st
             let id = BenchmarkId::new(format!("{dtype}/n{n}"), epochs);
             group.bench_with_input(id, &epochs, |b, &e| {
                 b.iter(|| {
-                    let mut tsne: tSNE<T, &[T]> = tSNE::new(&samples);
-                    tsne.perplexity(cast(PERPLEXITY))
+                    let affinities =
+                        Affinities::from_neighbors(black_box(&neighbors), cast(PERPLEXITY));
+                    let fitted = TsneBuilder::<T, &[T], 2>::new(&samples)
                         .epochs(e)
-                        .fit_sne_with_neighbors(black_box(&neighbors));
-                    black_box(tsne.embedding());
+                        .with_affinities(affinities)
+                        .fit_sne()
+                        .fit();
+                    black_box(fitted.embedding().to_vec());
                 });
             });
         }

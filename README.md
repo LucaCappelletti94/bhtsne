@@ -11,93 +11,153 @@
 </div>
 
 
-Parallel Barnes-Hut and exact implementations of the t-SNE algorithm written in Rust. The tree-accelerated version of the algorithm is described with fine detail in [this paper](http://lvdmaaten.github.io/publications/papers/JMLR_2014.pdf) by [Laurens van der Maaten](https://github.com/lvdmaaten). The exact, original, version of the algorithm is described in [this other paper](https://www.jmlr.org/papers/volume9/vandermaaten08a/vandermaaten08a.pdf) by [G. Hinton](https://www.cs.toronto.edu/~hinton/) and Laurens van der Maaten.
-Additional implementations of the algorithm, including this one, are listed at [this page](http://lvdmaaten.github.io/tsne/).
+Parallel Barnes-Hut and exact implementations of the t-SNE algorithm written in Rust. The tree-accelerated version of the algorithm is described in [this paper](http://lvdmaaten.github.io/publications/papers/JMLR_2014.pdf) by [Laurens van der Maaten](https://github.com/lvdmaaten). The exact original version is described in [this paper](https://www.jmlr.org/papers/volume9/vandermaaten08a/vandermaaten08a.pdf) by [G. Hinton](https://www.cs.toronto.edu/~hinton/) and Laurens van der Maaten. Additional implementations are listed at [this page](http://lvdmaaten.github.io/tsne/).
 
-## Installation 
+## Installation
 
-Add this line to your `Cargo.toml`:
 ```toml
 [dependencies]
-bhtsne = "0.7.11"
+bhtsne = "0.8"
 ```
-### Documentation
 
-The API documentation is available [here](https://docs.rs/bhtsne).
+## Basic use
 
-### Example
-
-The implementation supports custom data types and custom defined metrics. For instance, general vector data can be handled in the following way.
+Build an `Affinities` graph, pass it through a fit builder, and read the embedding off the returned `Fitted*` result. `Affinities::from_l2` is sugar for the Euclidean metric; `from_cosine` is sugar for L2-normalized rows; `from_metric(&data, perplexity, metric)` accepts any `Fn(&U, &U) -> T` for custom types.
 
 ```rust
-use bhtsne;
+use bhtsne::{Affinities, TsneBuilder};
 
-const N: usize = 150;         // Number of vectors to embed.
-const D: usize = 4;           // The dimensionality of the
-                              // original space.
-const THETA: f32 = 0.5;       // Parameter used by the Barnes-Hut algorithm.
-                              // Small values improve accuracy but increase complexity.
-
-const PERPLEXITY: f32 = 10.0; // Perplexity of the conditional distribution.
-const EPOCHS: usize = 2000;   // Number of fitting iterations.
-
-// Loads the data from a csv file skipping the first row,
-// treating it as headers and skipping the 5th column,
-// treating it as a class label.
-// Do note that you can also switch to f64s for higher precision.
-let data: Vec<f32> = bhtsne::load_csv("iris.csv", true, Some(&[4]), |float| {
-    float.parse().unwrap()
-})?;
-let samples: Vec<&[f32]> = data.chunks(D).collect();
-
-// Executes the Barnes-Hut approximation of the algorithm and writes the embedding to the
-// specified csv file.
-bhtsne::tSNE::<f32, &[f32], 2>::new(&samples)
-    .perplexity(PERPLEXITY)
-    .epochs(EPOCHS)
-    .barnes_hut(THETA, |sample_a, sample_b| {
-        sample_a
-            .iter()
-            .zip(sample_b.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
+// Thirty points on two 3-dimensional blobs.
+let raw: Vec<[f32; 3]> = (0..30)
+    .map(|i| {
+        let cluster = (i / 15) as f32;
+        let angle = (i % 15) as f32 * 0.4;
+        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
     })
-    .write_csv("iris_embedding.csv")?;
+    .collect();
+let samples: Vec<&[f32]> = raw.iter().map(|row| row.as_slice()).collect();
+
+let affinities = Affinities::from_l2(&samples, 5.0_f32);
+let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+    .epochs(250)
+    .with_affinities(affinities)
+    .bhtsne(0.5)
+    .fit();
+
+let embedding = fitted.embedding();
+assert_eq!(embedding.len(), samples.len() * 2);
+assert!(embedding.iter().all(|v| v.is_finite()));
 ```
 
-In the example euclidean distance is used, but any other distance metric on data types of choice, such as strings, can be defined and plugged in.
+The Barnes-Hut path (`.bhtsne(theta)`) supports embedding dimensionality `D` of 2, 3, 4, 5, 6, or 7 (32, 21, 16, 25, 21, and 18 bits per axis, respectively, in the Morton codec). The exact path (`.exact()`) stays general for any `D`. The FIt-SNE path (`.fit_sne()`) is restricted to `D` of 1 or 2 (the interpolation grid stays tractable) and is roughly flat in `n`, matching Barnes-Hut around 50k points and pulling ahead beyond, roughly 1.3x at 70k points and widening. It swaps in place of `.bhtsne(theta)` in the chain above.
 
-The tree-accelerated `barnes_hut` and `barnes_hut_with_neighbors` support an embedding dimensionality `D` of 2, 3, 4, 5, 6, or 7, the dimensionalities a Z-order code covers with ample precision (32, 21, 16, 25, 21, and 18 bits per axis, respectively). The exact `exact` path stays general for any `D`.
+The Morton (Z-order) linear tree the Barnes-Hut path walks lives in the sibling [`barnes-hut-tree`](barnes-hut-tree/README.md) crate, published standalone; any other force-approximation problem that needs a Z-order linear tree in a contiguous arena can pull it in directly through its `Arena`, `Morton`, and `Dim` API.
 
-The Morton (Z-order) linear tree the Barnes-Hut path walks lives in the sibling [`barnes-hut-tree`](barnes-hut-tree/README.md) crate, which the workspace also publishes standalone. Any other force-approximation problem that needs a Z-order linear tree in a contiguous arena can pull it in directly through its `Arena`, `Morton`, and `Dim` API, without depending on `bhtsne`.
+## Multi-view fusion
 
-## FIt-SNE
-
-For larger datasets the crate also provides `fit_sne` and `fit_sne_with_neighbors`, an FFT-accelerated, interpolation-based fitting path (the [FIt-SNE](https://www.nature.com/articles/s41592-018-0308-4) method of Linderman et al., the same algorithm [openTSNE](https://github.com/pavlin-policar/openTSNE) defaults to). They build the affinity graph exactly like `barnes_hut` (same vantage point tree, bandwidth search, symmetrization, and affinity cache) but approximate the repulsive forces in `O(n)` per epoch on an equispaced grid via a real FFT convolution, with no `theta` knob. They drop in place of `barnes_hut`:
+When one similarity does not capture the whole story (features on one side, a graph on the other, or several kernels over the same data), build each view separately as an `Affinities` and pool them through `AffinitiesBuilder`. The pool is a per-row convex combination, so a view that only opines on some of the samples contributes only to the rows it actually reaches, and the weights renormalize across the views present for each row.
 
 ```rust
-bhtsne::tSNE::<f32, &[f32], 2>::new(&samples)
-    .perplexity(PERPLEXITY)
-    .epochs(EPOCHS)
-    .fit_sne(|sample_a, sample_b| {
-        sample_a
-            .iter()
-            .zip(sample_b.iter())
-            .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
+use bhtsne::{Affinities, AffinitiesBuilder, TsneBuilder};
+
+// Thirty samples with two independent 3-dimensional feature views over the same rows.
+let view_a_raw: Vec<[f32; 3]> = (0..30)
+    .map(|i| {
+        let cluster = (i / 15) as f32;
+        let angle = (i % 15) as f32 * 0.4;
+        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
     })
-    .write_csv("embedding.csv")?;
+    .collect();
+let view_b_raw: Vec<[f32; 3]> = (0..30)
+    .map(|i| {
+        let cluster = (i % 2) as f32;
+        let t = (i as f32) * 0.3;
+        [cluster * 3.0, t.sin(), t.cos()]
+    })
+    .collect();
+let view_a_rows: Vec<&[f32]> = view_a_raw.iter().map(|r| r.as_slice()).collect();
+let view_b_rows: Vec<&[f32]> = view_b_raw.iter().map(|r| r.as_slice()).collect();
+
+let view_a = Affinities::from_l2(&view_a_rows, 5.0_f32);
+let view_b = Affinities::from_l2(&view_b_rows, 5.0_f32);
+let pooled = AffinitiesBuilder::new(view_a_rows.len())
+    .add(0.5, &view_a)
+    .add(0.5, &view_b)
+    .build();
+
+let node_ids: Vec<u32> = (0..view_a_rows.len() as u32).collect();
+let fitted = TsneBuilder::<f32, u32, 2>::new(&node_ids)
+    .epochs(250)
+    .with_affinities(pooled)
+    .bhtsne(0.5)
+    .fit();
+
+assert_eq!(fitted.embedding().len(), node_ids.len() * 2);
+assert!(fitted.embedding().iter().all(|v| v.is_finite()));
 ```
 
-`fit_sne` is restricted to an embedding dimensionality `D` of 1 or 2 (where the interpolation grid stays tractable). Its per-epoch cost is nearly flat in the point count, so it matches the parallel Barnes-Hut path around 50k points and is faster beyond; roughly 1.3x at 70k points and widening.
+## Partial views (missing modalities)
 
-## Parallelism 
-Being built on [rayon](https://github.com/rayon-rs/rayon), the algorithm uses the same number of threads as the number of CPUs available. Do note that on systems with hyperthreading enabled this equals the number of logical cores and not the physical ones. See [rayon's FAQs](https://github.com/rayon-rs/rayon/blob/master/FAQ.md) for additional informations.
+When features or similarities are only defined for a subset of the samples (missing modalities, partly disconnected graphs, one modality dropping out for some rows), build each view locally over its own samples and pool with `add_over(weight, &subset, &view)`. Each view carries its own local `0..k` indexing, and `subset[i]` names the global id of the view's `i`th local sample. Samples the view has no opinion on stay out of that view's row-normalized contribution; a sample no view opines on keeps an empty row in the pooled graph and drifts under repulsion alone during the fit.
+
+The example below has forty global samples: the first twenty-five carry a feature vector, the last twenty-five carry a precomputed neighbor list arranged in a ring, so the middle ten samples appear in both modalities, the outer thirty appear in only one, and no sample is missing from both.
+
+```rust
+use bhtsne::{Affinities, AffinitiesBuilder, Neighbor, TsneBuilder};
+
+const N: usize = 40;
+
+// Feature view: samples 0..25 have a 3-dimensional feature vector; samples 25..40 do not.
+let feature_raw: Vec<[f32; 3]> = (0..25)
+    .map(|i| {
+        let cluster = (i / 12) as f32;
+        let angle = (i % 12) as f32 * 0.5;
+        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
+    })
+    .collect();
+let feature_rows: Vec<&[f32]> = feature_raw.iter().map(|r| r.as_slice()).collect();
+let featured: Vec<usize> = (0..25).collect();
+let feature_view = Affinities::from_l2(&feature_rows, 5.0_f32);
+
+// Graph view: samples 15..40 have a precomputed neighbor list arranged in a ring.
+let neighbored: Vec<usize> = (15..40).collect();
+let k = neighbored.len();
+let mut neighbors: Vec<Vec<Neighbor<f32>>> = vec![Vec::new(); k];
+for local in 0..k {
+    let prev = (local + k - 1) % k;
+    let next = (local + 1) % k;
+    neighbors[local].push(Neighbor { index: prev, distance: 1.0 });
+    neighbors[local].push(Neighbor { index: next, distance: 1.0 });
+}
+let graph_view = Affinities::from_neighbors(&neighbors, 5.0_f32);
+
+let pooled = AffinitiesBuilder::new(N)
+    .add_over(0.5, &featured, &feature_view)
+    .add_over(0.5, &neighbored, &graph_view)
+    .build();
+
+let node_ids: Vec<u32> = (0..N as u32).collect();
+let fitted = TsneBuilder::<f32, u32, 2>::new(&node_ids)
+    .epochs(250)
+    .with_affinities(pooled)
+    .bhtsne(0.5)
+    .fit();
+
+assert_eq!(fitted.embedding().len(), N * 2);
+assert!(fitted.embedding().iter().all(|v| v.is_finite()));
+```
+
+If you instead already hold a global-indexed neighbor table (one row per global sample) with natural missingness, `Affinities::from_neighbors` accepts empty rows directly, so you can pass the whole table through without splitting into a subset first: a sample whose row is empty gets no attractive edges of its own, still receives any incoming edges through symmetrization, and drifts under repulsion alone when neither side connects it.
+
+See `bhtsne/examples/cora_tsne.rs` for a full walkthrough that pools a bounded shortest-path view over the Cora citation graph with a cosine view over the bag-of-words features.
+
+## Parallelism
+
+Built on [rayon](https://github.com/rayon-rs/rayon), the algorithm uses the current thread pool (defaults to one thread per logical core). See [rayon's FAQ](https://github.com/rayon-rs/rayon/blob/master/FAQ.md) for details.
 
 ## MNIST embedding
-The following embedding has been obtained by preprocessing the [MNIST](https://git-disl.github.io/GTDLBench/datasets/mnist_datasets/) train set using PCA to reduce its dimensionality to 20. It took approximately **20 seconds** on a M5 MacBook Pro.
+
+The embedding below was obtained by preprocessing the [MNIST](https://git-disl.github.io/GTDLBench/datasets/mnist_datasets/) train set with PCA down to 20 dimensions. It takes about 20 seconds on a M5 MacBook Pro.
 
 <p align="center">
   <img src="imgs/mnist_embedding.gif" alt="mnist" />

@@ -22,12 +22,10 @@ use rayon::{
 
 use crate::tsne;
 
-/// Per-epoch repulsion strategy: produces the attractive and repulsive force rows
-/// for the current embedding and the reciprocal of the `Q` normalizer `Z`, and
-/// evaluates the matching KL divergence. The generic `tSNE::run_loop` owns one of
-/// these; the attractive force, the fused gradient-descent update, and the zero-mean
-/// recentering around it are identical across strategies, so only this trait differs
-/// between the Barnes-Hut and FIt-SNE paths.
+/// Per-epoch repulsion strategy: produces the attractive and repulsive force rows for the current
+/// embedding and the reciprocal of the `Q` normalizer `Z`. The Barnes-Hut and FIt-SNE fit builders
+/// each own one of these; the attractive force, the fused gradient-descent update, and the
+/// zero-mean recentering around it are identical across strategies, so only this trait differs.
 pub(crate) trait Repulsion<T, const D: usize> {
     /// Fills the attractive (`positive`) and repulsive (`negative`) force rows for
     /// the current embedding `y` and returns the reciprocal of the `Q` normalizer `Z`.
@@ -39,17 +37,6 @@ pub(crate) trait Repulsion<T, const D: usize> {
         p_values: &[T],
         positive: &mut [T],
         negative: &mut [T],
-    ) -> T;
-
-    /// Evaluates the KL divergence (the t-SNE loss) of the current embedding under
-    /// this strategy's repulsion approximation.
-    fn error(
-        &self,
-        p_rows: &[usize],
-        p_columns: &[u32],
-        p_values: &[T],
-        y: &[T],
-        n_samples: usize,
     ) -> T;
 }
 
@@ -65,8 +52,6 @@ where
     /// Per-sample contribution to the `Q` normalizer, reduced after the force pass.
     /// Sized to the sample count on the first epoch and reused thereafter.
     q_sums: Vec<T>,
-    /// Approximation accuracy, retained for the KL-divergence evaluation.
-    theta: T,
     /// `theta` squared, the form the cell-acceptance test compares against.
     theta_sq: T,
 }
@@ -80,7 +65,6 @@ where
         Self {
             arena: barnes_hut_tree::BarnesHutTree::empty(),
             q_sums: Vec::new(),
-            theta,
             theta_sq: theta * theta,
         }
     }
@@ -156,19 +140,6 @@ where
 
         q_sum.recip()
     }
-
-    fn error(
-        &self,
-        p_rows: &[usize],
-        p_columns: &[u32],
-        p_values: &[T],
-        y: &[T],
-        n_samples: usize,
-    ) -> T {
-        tsne::evaluate_error_approximately::<T, D>(
-            p_rows, p_columns, p_values, y, n_samples, self.theta,
-        )
-    }
 }
 
 /// FIt-SNE repulsion. The attractive forces come from the sparse graph exactly as in
@@ -229,16 +200,5 @@ where
             .repulsive_forces(y, n_samples, negative, &mut z);
 
         z.recip()
-    }
-
-    fn error(
-        &self,
-        p_rows: &[usize],
-        p_columns: &[u32],
-        p_values: &[T],
-        y: &[T],
-        n_samples: usize,
-    ) -> T {
-        tsne::evaluate_error_interpolated::<T, D>(p_rows, p_columns, p_values, y, n_samples)
     }
 }

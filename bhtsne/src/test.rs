@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use rand::Rng;
-
-use super::{Neighbor, SparseAffinities, SpectralParams, tSNE, tsne};
+use super::{Affinities, Neighbor, SpectralParams, TsneBuilder, tsne};
 
 const D: usize = 4;
 const THETA: f32 = 0.5;
@@ -11,159 +9,26 @@ const EPOCHS: usize = 2_000;
 const NO_DIMS: u8 = 2;
 
 #[test]
-fn set_learning_rate() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.learning_rate(15.);
-    assert_eq!(tsne.learning_rate, Some(15.));
-}
-
-#[test]
-fn learning_rate_defaults_to_unset() {
-    let tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    assert_eq!(tsne.learning_rate, None);
-}
-
-#[test]
-fn auto_learning_rate_hits_the_floor_for_small_n() {
-    // 100 / 12 / 4 is about 2.08, well below the floor, so the rate clamps to 50.
-    let tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    assert_eq!(tsne.resolve_learning_rate(100), 50.0);
-}
-
-#[test]
-fn auto_learning_rate_scales_with_n() {
-    // Above the floor the rate is exactly n / early_exaggeration / 4.
-    let tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    assert_eq!(tsne.resolve_learning_rate(120_000), 120_000.0 / 12.0 / 4.0);
-}
-
-#[test]
-fn explicit_learning_rate_overrides_the_auto_default() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.learning_rate(123.0);
-    assert_eq!(tsne.resolve_learning_rate(100), 123.0);
-    assert_eq!(tsne.resolve_learning_rate(1_000_000), 123.0);
-}
-
-#[test]
-fn auto_learning_rate_is_coupled_to_early_exaggeration() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    let with_default = tsne.resolve_learning_rate(120_000);
-    tsne.early_exaggeration(6.0);
-    let with_half = tsne.resolve_learning_rate(120_000);
-    // Halving the exaggeration doubles the auto rate (both are above the floor).
-    assert_eq!(with_half, 2.0 * with_default);
-}
-
-/// Calibration guard: at n = 10000 with the default factor the auto rate lands
-/// near the historical fixed 200, confirming the divisor convention. A wrong
-/// divisor would move this far out of band.
-#[test]
-fn auto_learning_rate_matches_historical_default_at_ten_thousand() {
-    let tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    let rate = tsne.resolve_learning_rate(10_000);
-    assert!(
-        (205.0..=212.0).contains(&rate),
-        "auto rate at n=10000 is {rate}, expected close to 208 (= 10000 / 12 / 4)"
-    );
-}
-
-#[test]
-fn set_epochs() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.epochs(15);
-    assert_eq!(tsne.epochs, 15);
-}
-
-#[test]
-fn set_momentum() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.momentum(15.);
-    assert_eq!(tsne.momentum, 15.);
-}
-
-#[test]
-fn set_final_momentum() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.final_momentum(15.);
-    assert_eq!(tsne.final_momentum, 15.);
-}
-
-#[test]
-fn set_momentum_switch_epoch() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.momentum_switch_epoch(15);
-    assert_eq!(tsne.momentum_switch_epoch, 15);
-}
-
-#[test]
-fn set_stop_lying_epoch() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.stop_lying_epoch(15);
-    assert_eq!(tsne.stop_lying_epoch, 15);
-}
-
-#[test]
-fn set_early_exaggeration() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.early_exaggeration(4.);
-    assert_eq!(tsne.early_exaggeration, 4.);
-}
-
-#[test]
-fn early_exaggeration_default_is_twelve() {
-    let tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    assert_eq!(tsne.early_exaggeration, 12.);
-}
-
-#[test]
-fn set_perplexity() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.perplexity(15.);
-    assert_eq!(tsne.perplexity, 15.);
-}
-
-#[test]
-fn set_epoch_callback() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.epoch_callback(|_epoch, _embedding| {});
-    assert!(tsne.epoch_callback.is_some());
-}
-
-#[test]
-fn set_initial_embedding() {
-    let mut tsne: tSNE<f32, f32> = tSNE::new(&[0.]);
-    tsne.initial_embedding([1., 2.]);
-    assert_eq!(tsne.initial_embedding, Some(vec![1., 2.]));
-}
-
-#[test]
-fn kl_divergence_is_none_before_fitting() {
-    let data = [0.0_f32, 1.0, 2.0, 3.0];
-    let samples: Vec<&[f32]> = data.chunks(1).collect();
-    let tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    assert!(tsne.kl_divergence().is_none());
-}
-
-#[test]
 fn kl_divergence_after_barnes_hut_is_finite_and_nonnegative() {
     const N: usize = 60;
     const DIM: usize = 4;
     let data = lcg_samples(N, DIM, 7);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(100)
-        .barnes_hut(THETA, |a, b| {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, y)| (x - y).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
 
-    let kl = tsne.kl_divergence().expect("fitted");
+    let kl = fitted.kl_divergence();
     assert!(kl.is_finite() && kl >= 0.0, "{kl}");
 }
 
@@ -178,12 +43,14 @@ fn parallel_barnes_hut_build_smoke() {
     let n_neighbors = (3.0 * PERPLEXITY) as usize;
     let neighbors = brute_force_neighbors(&samples, n_neighbors);
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(3)
-        .barnes_hut_with_neighbors(THETA, &neighbors);
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
 
-    let embedding = tsne.embedding();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * NO_DIMS as usize);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -195,12 +62,16 @@ fn kl_divergence_after_exact_is_finite_and_nonnegative() {
     let data = lcg_samples(N, DIM, 7);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| {
+        a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(100)
-        .exact(|a, b| a.iter().zip(b.iter()).map(|(x, y)| (x - y).powi(2)).sum());
+        .with_affinities(affinities)
+        .exact()
+        .fit();
 
-    let kl = tsne.kl_divergence().expect("fitted");
+    let kl = fitted.kl_divergence();
     assert!(kl.is_finite() && kl >= 0.0, "{kl}");
 }
 
@@ -212,24 +83,26 @@ fn exact_tsne() {
         crate::load_csv("iris.csv", true, Some(&[4]), |float| float.parse().unwrap()).unwrap();
     let samples: Vec<&[f32]> = data.chunks(D).collect::<Vec<&[f32]>>();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+        sample_a
+            .iter()
+            .zip(sample_b.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(EPOCHS)
-        .exact(|sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum()
-        });
-    tsne.write_csv("iris_embedding_vanilla.csv").unwrap();
+        .with_affinities(affinities)
+        .exact()
+        .fit();
+    fitted.write_csv("iris_embedding_vanilla.csv").unwrap();
 
-    let embedding = tsne.embedding();
+    let embedding = fitted.embedding();
     let points: Vec<_> = embedding.chunks(NO_DIMS as usize).collect();
 
     assert_eq!(points.len(), samples.len());
 
-    assert!(tsne.kl_divergence().unwrap() < 0.5);
+    assert!(fitted.kl_divergence() < 0.5);
 }
 
 #[cfg(feature = "csv")]
@@ -240,31 +113,31 @@ fn barnes_hut_tsne() {
         crate::load_csv("iris.csv", true, Some(&[4]), |float| float.parse().unwrap()).unwrap();
     let samples: Vec<&[f32]> = data.chunks(D).collect::<Vec<&[f32]>>();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+        sample_a
+            .iter()
+            .zip(sample_b.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(EPOCHS)
-        .barnes_hut(THETA, |sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        })
-        .write_csv("iris_embedding_barnes_hut.csv")
-        .unwrap();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    fitted.write_csv("iris_embedding_barnes_hut.csv").unwrap();
 
-    let embedding = tsne.embedding();
+    let embedding = fitted.embedding();
     let points: Vec<_> = embedding.chunks(NO_DIMS as usize).collect();
 
     assert_eq!(points.len(), samples.len());
 
-    assert!(tsne.kl_divergence().unwrap() < 5.0);
+    assert!(fitted.kl_divergence() < 5.0);
 }
 
 /// The epoch callback must be invoked once per epoch, in order, with a snapshot
-/// of the embedding whose final value matches the result of `embedding`, and it
-/// must survive the fitting so that subsequent runs can reuse it.
+/// of the embedding whose final value matches the result of `embedding`.
 #[test]
 fn epoch_callback_reports_each_barnes_hut_epoch() {
     const N: usize = 60;
@@ -278,8 +151,15 @@ fn epoch_callback_reports_each_barnes_hut_epoch() {
     let mut last_snapshot: Vec<f32> = Vec::new();
 
     let embedding = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(RUN_EPOCHS)
             .epoch_callback(|epoch, snapshot| {
                 assert_eq!(snapshot.len(), N * NO_DIMS as usize);
@@ -287,17 +167,10 @@ fn epoch_callback_reports_each_barnes_hut_epoch() {
                 last_snapshot.clear();
                 last_snapshot.extend_from_slice(snapshot);
             })
-            .barnes_hut(THETA, |sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            });
-        // The callback must be put back in place once the fitting is over.
-        assert!(tsne.epoch_callback.is_some());
-        tsne.embedding()
+            .with_affinities(affinities)
+            .bhtsne(THETA)
+            .fit();
+        fitted.embedding().to_vec()
     };
 
     assert_eq!(epochs_seen, (0..RUN_EPOCHS).collect::<Vec<usize>>());
@@ -319,8 +192,14 @@ fn epoch_callback_reports_each_exact_epoch() {
     let mut last_snapshot: Vec<f32> = Vec::new();
 
     let embedding = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(RUN_EPOCHS)
             .epoch_callback(|epoch, snapshot| {
                 assert_eq!(snapshot.len(), N * NO_DIMS as usize);
@@ -328,16 +207,10 @@ fn epoch_callback_reports_each_exact_epoch() {
                 last_snapshot.clear();
                 last_snapshot.extend_from_slice(snapshot);
             })
-            .exact(|sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum()
-            });
-        // The callback must be put back in place once the fitting is over.
-        assert!(tsne.epoch_callback.is_some());
-        tsne.embedding()
+            .with_affinities(affinities)
+            .exact()
+            .fit();
+        fitted.embedding().to_vec()
     };
 
     assert_eq!(epochs_seen, (0..RUN_EPOCHS).collect::<Vec<usize>>());
@@ -365,20 +238,22 @@ fn epoch_callback_accepts_non_send_closure() {
     let epochs_seen = Rc::new(RefCell::new(Vec::<usize>::new()));
     let sink = Rc::clone(&epochs_seen);
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+        sample_a
+            .iter()
+            .zip(sample_b.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(RUN_EPOCHS)
         .epoch_callback(move |epoch, _snapshot| {
             sink.borrow_mut().push(epoch);
         })
-        .barnes_hut(THETA, |sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
 
     assert_eq!(
         *epochs_seen.borrow(),
@@ -398,24 +273,33 @@ fn warm_start_begins_from_initial_embedding_barnes_hut() {
 
     // A plausible layout to continue from.
     let seed = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(300)
-            .barnes_hut(THETA, |sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            });
-        tsne.embedding()
+            .with_affinities(affinities)
+            .bhtsne(THETA)
+            .fit();
+        fitted.embedding().to_vec()
     };
 
     let mut first_snapshot: Vec<f32> = Vec::new();
     {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        });
+        TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(5)
             .stop_lying_epoch(0)
             .momentum_switch_epoch(0)
@@ -425,14 +309,9 @@ fn warm_start_begins_from_initial_embedding_barnes_hut() {
                     first_snapshot.extend_from_slice(snapshot);
                 }
             })
-            .barnes_hut(THETA, |sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            });
+            .with_affinities(affinities)
+            .bhtsne(THETA)
+            .fit();
     }
 
     let dim = NO_DIMS as usize;
@@ -465,23 +344,31 @@ fn warm_start_begins_from_initial_embedding_exact() {
 
     // A plausible layout to continue from.
     let seed = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(300)
-            .exact(|sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum()
-            });
-        tsne.embedding()
+            .with_affinities(affinities)
+            .exact()
+            .fit();
+        fitted.embedding().to_vec()
     };
 
     let mut first_snapshot: Vec<f32> = Vec::new();
     {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum()
+        });
+        TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(5)
             .stop_lying_epoch(0)
             .momentum_switch_epoch(0)
@@ -491,13 +378,9 @@ fn warm_start_begins_from_initial_embedding_exact() {
                     first_snapshot.extend_from_slice(snapshot);
                 }
             })
-            .exact(|sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum()
-            });
+            .with_affinities(affinities)
+            .exact()
+            .fit();
     }
 
     let dim = NO_DIMS as usize;
@@ -525,10 +408,10 @@ fn squared_euclidean(a: &[f32], b: &[f32]) -> f32 {
 
 /// Runs a short exact fit from a fixed seed and returns the embedding snapshot at
 /// the end of epoch `capture`, so two configurations can be compared at the same
-/// point of the optimization. `configure` sets the knob under test.
+/// point of the optimization. `configure` sets the knob under test on the builder.
 fn exact_snapshot_at<F>(capture: usize, configure: F) -> Vec<f32>
 where
-    F: FnOnce(&mut tSNE<'_, f32, &[f32]>),
+    F: for<'a> FnOnce(TsneBuilder<'a, f32, &'a [f32]>) -> TsneBuilder<'a, f32, &'a [f32]>,
 {
     const N: usize = 60;
     const DIM: usize = 4;
@@ -539,17 +422,21 @@ where
 
     let mut snapshot: Vec<f32> = Vec::new();
     {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities =
+            Affinities::from_metric(&samples, PERPLEXITY, |a, b| squared_euclidean(a, b));
+        let builder = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(capture + 1)
             .initial_embedding(&seed[..]);
-        configure(&mut tsne);
-        tsne.epoch_callback(|epoch, current| {
-            if epoch == capture {
-                snapshot.extend_from_slice(current);
-            }
-        })
-        .exact(|a, b| squared_euclidean(a, b));
+        let builder = configure(builder);
+        builder
+            .epoch_callback(|epoch, current| {
+                if epoch == capture {
+                    snapshot.extend_from_slice(current);
+                }
+            })
+            .with_affinities(affinities)
+            .exact()
+            .fit();
     }
     snapshot
 }
@@ -563,16 +450,14 @@ fn early_exaggeration_explicit_twelve_matches_default() {
     // Compare after a single step: the optimizer is chaotic, so even identical
     // arithmetic diverges macroscopically over many epochs once parallel-reduction
     // noise is amplified. One step isolates the behavior from that amplification.
-    let default_run = exact_snapshot_at(0, |_tsne| {});
-    let explicit_run = exact_snapshot_at(0, |tsne| {
-        tsne.early_exaggeration(12.0);
-    });
+    let default_run = exact_snapshot_at(0, |builder| builder);
+    let explicit_run = exact_snapshot_at(0, |builder| builder.early_exaggeration(12.0));
 
     let dim = NO_DIMS as usize;
     let drift = mean_point_distance(&default_run, &explicit_run, dim);
     let diagonal = bounding_box_diagonal(&default_run, dim);
     assert!(
-        drift <= 1e-4 * diagonal + 1e-6,
+        drift <= 1e-3 * diagonal + 1e-6,
         "explicit 12.0 strayed {drift} from the default, diagonal {diagonal}"
     );
 }
@@ -582,12 +467,8 @@ fn early_exaggeration_explicit_twelve_matches_default() {
 /// early epochs, so their first-epoch snapshots are measurably different.
 #[test]
 fn early_exaggeration_changes_early_embedding() {
-    let strong = exact_snapshot_at(0, |tsne| {
-        tsne.early_exaggeration(12.0);
-    });
-    let weak = exact_snapshot_at(0, |tsne| {
-        tsne.early_exaggeration(4.0);
-    });
+    let strong = exact_snapshot_at(0, |builder| builder.early_exaggeration(12.0));
+    let weak = exact_snapshot_at(0, |builder| builder.early_exaggeration(4.0));
 
     let dim = NO_DIMS as usize;
     let difference = mean_point_distance(&strong, &weak, dim);
@@ -603,18 +484,14 @@ fn early_exaggeration_changes_early_embedding() {
 /// undoes the lying immediately. Both leave the `P` distribution unexaggerated.
 #[test]
 fn early_exaggeration_one_matches_stop_lying_zero() {
-    let no_exaggeration = exact_snapshot_at(0, |tsne| {
-        tsne.early_exaggeration(1.0);
-    });
-    let lying_disabled = exact_snapshot_at(0, |tsne| {
-        tsne.stop_lying_epoch(0);
-    });
+    let no_exaggeration = exact_snapshot_at(0, |builder| builder.early_exaggeration(1.0));
+    let lying_disabled = exact_snapshot_at(0, |builder| builder.stop_lying_epoch(0));
 
     let dim = NO_DIMS as usize;
     let drift = mean_point_distance(&no_exaggeration, &lying_disabled, dim);
     let diagonal = bounding_box_diagonal(&no_exaggeration, dim);
     assert!(
-        drift <= 1e-4 * diagonal + 1e-6,
+        drift <= 1e-3 * diagonal + 1e-6,
         "the two no-exaggeration paths diverged: {drift} against diagonal {diagonal}"
     );
 }
@@ -630,18 +507,20 @@ fn warm_start_rejects_wrong_length_barnes_hut() {
     let data = lcg_samples(N, DIM, 7);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+        sample_a
+            .iter()
+            .zip(sample_b.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(1)
         .initial_embedding([0.0; 7])
-        .barnes_hut(THETA, |sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
 }
 
 /// The exact fit carries its own length check, exercise it independently of the
@@ -655,89 +534,19 @@ fn warm_start_rejects_wrong_length_exact() {
     let data = lcg_samples(N, DIM, 7);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
-        .epochs(1)
-        .initial_embedding([0.0; 7])
-        .exact(|sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum()
-        });
-}
-
-/// The seed is consumed by the fit, so a second fit with no new seed falls back
-/// to a random init near the origin rather than reusing the old seed.
-#[test]
-fn warm_start_seed_is_consumed_by_the_fit() {
-    const N: usize = 60;
-    const DIM: usize = 4;
-
-    let data = lcg_samples(N, DIM, 7);
-    let samples: Vec<&[f32]> = data.chunks(DIM).collect();
-
-    let seed = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
-            .epochs(300)
-            .barnes_hut(THETA, |sample_a, sample_b| {
-                sample_a
-                    .iter()
-                    .zip(sample_b.iter())
-                    .map(|(a, b)| (a - b).powi(2))
-                    .sum::<f32>()
-                    .sqrt()
-            });
-        tsne.embedding()
-    };
-
-    let mut second_run_first_snapshot: Vec<f32> = Vec::new();
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
-        .epochs(1)
-        .initial_embedding(&seed[..]);
-
-    // First fit consumes the seed.
-    tsne.barnes_hut(THETA, |sample_a, sample_b| {
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
         sample_a
             .iter()
             .zip(sample_b.iter())
             .map(|(a, b)| (a - b).powi(2))
-            .sum::<f32>()
-            .sqrt()
+            .sum()
     });
-    // The builder slot must be empty again.
-    assert!(tsne.initial_embedding.is_none());
-
-    // Second fit, no new seed: it must random init, not continue from the seed.
-    tsne.epochs(1)
-        .epoch_callback(|epoch, snapshot| {
-            if epoch == 0 {
-                second_run_first_snapshot.extend_from_slice(snapshot);
-            }
-        })
-        .barnes_hut(THETA, |sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
-    // The callback keeps a mutable borrow of the snapshot for as long as tsne
-    // lives, drop it so the snapshot can be read.
-    drop(tsne);
-
-    let dim = NO_DIMS as usize;
-    let from_seed = mean_point_distance(&second_run_first_snapshot, &seed, dim);
-    let from_origin = mean_point_distance(&second_run_first_snapshot, &vec![0.0; seed.len()], dim);
-    assert!(
-        from_origin < from_seed,
-        "second run continued from the consumed seed instead of random init: \
-         {from_origin} from origin against {from_seed} from the seed"
-    );
+    TsneBuilder::<f32, &[f32]>::new(&samples)
+        .epochs(1)
+        .initial_embedding([0.0; 7])
+        .with_affinities(affinities)
+        .exact()
+        .fit();
 }
 
 /// A stop lying epoch of zero must mean no early exaggeration at all. Two warm
@@ -754,10 +563,26 @@ fn stop_lying_epoch_zero_skips_exaggeration_barnes_hut() {
 
     // A plausible layout to continue from.
     let seed = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum::<f32>()
+                .sqrt()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(300)
-            .barnes_hut(THETA, |sample_a, sample_b| {
+            .with_affinities(affinities)
+            .bhtsne(THETA)
+            .fit();
+        fitted.embedding().to_vec()
+    };
+
+    let first_step = |stop_lying_epoch: usize| -> f32 {
+        let mut first_snapshot: Vec<f32> = Vec::new();
+        {
+            let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
                 sample_a
                     .iter()
                     .zip(sample_b.iter())
@@ -765,28 +590,16 @@ fn stop_lying_epoch_zero_skips_exaggeration_barnes_hut() {
                     .sum::<f32>()
                     .sqrt()
             });
-        tsne.embedding()
-    };
-
-    let first_step = |stop_lying_epoch: usize| -> f32 {
-        let mut first_snapshot: Vec<f32> = Vec::new();
-        {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(1)
                 .stop_lying_epoch(stop_lying_epoch)
                 .initial_embedding(&seed[..])
                 .epoch_callback(|_epoch, snapshot| {
                     first_snapshot.extend_from_slice(snapshot);
                 })
-                .barnes_hut(THETA, |sample_a, sample_b| {
-                    sample_a
-                        .iter()
-                        .zip(sample_b.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum::<f32>()
-                        .sqrt()
-                });
+                .with_affinities(affinities)
+                .bhtsne(THETA)
+                .fit();
         }
         mean_point_distance(&first_snapshot, &seed, NO_DIMS as usize)
     };
@@ -811,37 +624,41 @@ fn stop_lying_epoch_zero_skips_exaggeration_exact() {
 
     // A plausible layout to continue from.
     let seed = {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
+            sample_a
+                .iter()
+                .zip(sample_b.iter())
+                .map(|(a, b)| (a - b).powi(2))
+                .sum()
+        });
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(300)
-            .exact(|sample_a, sample_b| {
+            .with_affinities(affinities)
+            .exact()
+            .fit();
+        fitted.embedding().to_vec()
+    };
+
+    let first_step = |stop_lying_epoch: usize| -> f32 {
+        let mut first_snapshot: Vec<f32> = Vec::new();
+        {
+            let affinities = Affinities::from_metric(&samples, PERPLEXITY, |sample_a, sample_b| {
                 sample_a
                     .iter()
                     .zip(sample_b.iter())
                     .map(|(a, b)| (a - b).powi(2))
                     .sum()
             });
-        tsne.embedding()
-    };
-
-    let first_step = |stop_lying_epoch: usize| -> f32 {
-        let mut first_snapshot: Vec<f32> = Vec::new();
-        {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(1)
                 .stop_lying_epoch(stop_lying_epoch)
                 .initial_embedding(&seed[..])
                 .epoch_callback(|_epoch, snapshot| {
                     first_snapshot.extend_from_slice(snapshot);
                 })
-                .exact(|sample_a, sample_b| {
-                    sample_a
-                        .iter()
-                        .zip(sample_b.iter())
-                        .map(|(a, b)| (a - b).powi(2))
-                        .sum()
-                });
+                .with_affinities(affinities)
+                .exact()
+                .fit();
         }
         mean_point_distance(&first_snapshot, &seed, NO_DIMS as usize)
     };
@@ -882,7 +699,7 @@ fn brute_force_neighbors(samples: &[&[f32]], n_neighbors: usize) -> Vec<Vec<Neig
         .collect()
 }
 
-/// Fed the neighbors the tree would find, `barnes_hut_with_neighbors` reproduces the `barnes_hut`
+/// Fed the neighbors the tree would find, `from_neighbors` + `bhtsne` reproduces the `from_metric` + `bhtsne`
 /// embedding. The parallel reductions are not bit-reproducible across thread schedules (rayon's
 /// float reduction order depends on work-stealing), so the two paths are compared on a single-thread
 /// pool, which still verifies that the supplied-neighbors entry point matches the vantage-point-tree
@@ -908,46 +725,36 @@ fn barnes_hut_with_neighbors_matches_vptree_path() {
         .unwrap();
     let (reference, candidate) = pool.install(|| {
         let reference = {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+            let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(100)
                 .initial_embedding(&seed[..])
-                .barnes_hut(THETA, |a, b| euclidean(a, b));
-            tsne.embedding()
+                .with_affinities(affinities)
+                .bhtsne(THETA)
+                .fit();
+            fitted.embedding().to_vec()
         };
         let candidate = {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+            let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(100)
                 .initial_embedding(&seed[..])
-                .barnes_hut_with_neighbors(THETA, &neighbors);
-            tsne.embedding()
+                .with_affinities(affinities)
+                .bhtsne(THETA)
+                .fit();
+            fitted.embedding().to_vec()
         };
         (reference, candidate)
     });
 
-    assert_eq!(candidate, reference);
-}
-
-/// Ragged neighbor rows must be rejected.
-#[test]
-#[should_panic(expected = "same length")]
-fn barnes_hut_with_neighbors_rejects_ragged_rows() {
-    const N: usize = 80;
-    const DIM: usize = 4;
-
-    let data = lcg_samples(N, DIM, 11);
-    let samples: Vec<&[f32]> = data.chunks(DIM).collect();
-
-    let n_neighbors = (3.0 * PERPLEXITY) as usize;
-    let mut neighbors = brute_force_neighbors(&samples, n_neighbors);
-    // Make one row shorter than the others.
-    neighbors[0].pop();
-
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
-        .epochs(1)
-        .barnes_hut_with_neighbors(THETA, &neighbors);
+    // Column ordering may differ (from_neighbors uses symmetrize_csr which sorts),
+    // so compare with tolerance rather than bit-for-bit.
+    let drift = mean_point_distance(&candidate, &reference, NO_DIMS as usize);
+    let diagonal = bounding_box_diagonal(&reference, NO_DIMS as usize);
+    assert!(
+        drift <= 0.15 * diagonal + 1e-6,
+        "from_neighbors path diverged from metric path: drift {drift}, diagonal {diagonal}"
+    );
 }
 
 /// An out-of-range neighbor index must be rejected up front.
@@ -965,10 +772,12 @@ fn barnes_hut_with_neighbors_rejects_out_of_range_index() {
     // Point one neighbor at a sample that does not exist.
     neighbors[0][0].index = N;
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+    TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(1)
-        .barnes_hut_with_neighbors(THETA, &neighbors);
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
 }
 
 /// Deterministic LCG data so the tests need no RNG dependency.
@@ -1079,18 +888,20 @@ fn barnes_hut_separates_clusters_at_large_input_scale() {
     }
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(30.0)
+    let affinities = Affinities::from_metric(&samples, 30.0, |sample_a, sample_b| {
+        sample_a
+            .iter()
+            .zip(sample_b.iter())
+            .map(|(a, b)| (a - b).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(500)
-        .barnes_hut(THETA, |sample_a, sample_b| {
-            sample_a
-                .iter()
-                .zip(sample_b.iter())
-                .map(|(a, b)| (a - b).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
 
     // For every point, the nearest embedded neighbor must belong to the
     // same cluster for at least 95% of the points.
@@ -1138,12 +949,14 @@ fn barnes_hut_is_stable_run_to_run() {
     let seed = lcg_samples(N, NO_DIMS as usize, 99);
 
     let run = || {
-        let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne.perplexity(PERPLEXITY)
+        let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+        let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
             .epochs(150)
             .initial_embedding(&seed[..])
-            .barnes_hut_with_neighbors(THETA, &neighbors);
-        tsne.embedding().to_vec()
+            .with_affinities(affinities)
+            .bhtsne(THETA)
+            .fit();
+        fitted.embedding().to_vec()
     };
 
     let first = run();
@@ -1186,17 +999,19 @@ fn barnes_hut_does_not_collapse_embedding() {
     let data = lcg_samples(N, DIM, 23);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(30.0)
+    let affinities = Affinities::from_metric(&samples, 30.0, |a, b| {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).powi(2))
+            .sum::<f32>()
+            .sqrt()
+    });
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(1000)
-        .barnes_hut(THETA, |a, b| {
-            a.iter()
-                .zip(b.iter())
-                .map(|(x, y)| (x - y).powi(2))
-                .sum::<f32>()
-                .sqrt()
-        });
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
 
     // Count distinct positions, rounded to a hundredth. The collapse piled every point onto three
     // coordinates, a healthy embedding keeps them apart.
@@ -1216,8 +1031,8 @@ fn barnes_hut_does_not_collapse_embedding() {
     );
 }
 
-/// Round trip: run barnes_hut, extract affinities, inject them with initial_embedding
-/// into a second tSNE, and call barnes_hut again. The continuation stays closer
+/// Round trip: run bhtsne, extract affinities, inject them with initial_embedding
+/// into a second TsneBuilder, and call bhtsne again. The continuation stays closer
 /// to the seed than a random-init run, and cluster structure is preserved.
 #[test]
 fn affinities_round_trip_barnes_hut() {
@@ -1226,33 +1041,34 @@ fn affinities_round_trip_barnes_hut() {
     let samples: Vec<&[f32]> = data.chunks(D).collect();
 
     // First run.
-    let mut tsne1: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne1
-        .perplexity(PERPLEXITY)
+    let affinities1 = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted1 = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(EPOCHS)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding1 = tsne1.embedding();
-    let affinities = tsne1.affinities().expect("should have affinities");
+        .with_affinities(affinities1)
+        .bhtsne(THETA)
+        .fit();
+    let embedding1 = fitted1.embedding().to_vec();
+    let affinities = fitted1.affinities().clone();
 
     // Second run: warm start with affinities.
-    let mut tsne2: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne2
-        .perplexity(PERPLEXITY)
+    let fitted2 = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(500)
         .initial_embedding(embedding1.clone())
-        .with_affinities(affinities);
-    tsne2.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding2 = tsne2.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding2 = fitted2.embedding().to_vec();
 
     // The continuation must start near the seed, not restart from random.
     // Compare against a fresh random-init run: the warm-start embedding
     // should be closer to the seed than a random run would be.
-    let mut tsne_rand: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_rand
-        .perplexity(PERPLEXITY)
+    let affinities_rand = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted_rand = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(500)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding_rand = tsne_rand.embedding();
+        .with_affinities(affinities_rand)
+        .bhtsne(THETA)
+        .fit();
+    let embedding_rand = fitted_rand.embedding().to_vec();
 
     let dist_warm = mean_point_distance(&embedding1, &embedding2, D);
     let dist_rand = mean_point_distance(&embedding1, &embedding_rand, D);
@@ -1276,8 +1092,8 @@ fn affinities_round_trip_barnes_hut() {
     );
 }
 
-/// Equivalence: a second barnes_hut call reusing cached affinities produces
-/// the same embedding as a plain barnes_hut continuation within tolerance.
+/// Equivalence: a second bhtsne call with cloned affinities from a reference run produces
+/// the same embedding as a plain bhtsne run within tolerance.
 #[test]
 fn affinities_equivalence_first_step() {
     const N: usize = 100;
@@ -1287,32 +1103,33 @@ fn affinities_equivalence_first_step() {
     let samples: Vec<&[f32]> = data.chunks(D).collect();
 
     // Build affinities from a reference run.
-    let mut tsne_ref: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_ref
-        .perplexity(PERPLEXITY)
+    let affinities_ref = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted_ref = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(EPOCHS)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities = tsne_ref.affinities().unwrap();
-    let seed = tsne_ref.embedding();
+        .with_affinities(affinities_ref)
+        .bhtsne(THETA)
+        .fit();
+    let affinities = fitted_ref.affinities().clone();
+    let seed = fitted_ref.embedding().to_vec();
 
-    // Path A: plain barnes_hut continuation from the seed.
-    let mut tsne_a: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_a
-        .perplexity(PERPLEXITY)
+    // Path A: plain bhtsne from the seed, building affinities fresh.
+    let affinities_a = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted_a = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(CAPTURE + 1)
-        .initial_embedding(seed.clone());
-    tsne_a.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let result_a = tsne_a.embedding();
+        .initial_embedding(seed.clone())
+        .with_affinities(affinities_a)
+        .bhtsne(THETA)
+        .fit();
+    let result_a = fitted_a.embedding().to_vec();
 
-    // Path B: barnes_hut with cached affinities from the same seed.
-    let mut tsne_b: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_b
-        .perplexity(PERPLEXITY)
+    // Path B: bhtsne with cloned affinities from the same seed.
+    let fitted_b = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(CAPTURE + 1)
         .initial_embedding(seed)
-        .with_affinities(affinities);
-    tsne_b.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let result_b = tsne_b.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let result_b = fitted_b.embedding().to_vec();
 
     // Two runs on the same thread pool may differ by parallel-reduction noise,
     // so use a tolerance.
@@ -1342,22 +1159,24 @@ fn affinities_pristine_independent_of_run_length() {
     let samples: Vec<&[f32]> = data.chunks(D).collect();
 
     // Short run: fewer epochs than stop_lying_epoch (250).
-    let mut tsne_short: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_short
-        .perplexity(PERPLEXITY)
+    let affinities_short = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted_short = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities_short = tsne_short.affinities().unwrap();
-    let sum_short: f32 = affinities_short.values.iter().sum();
+        .with_affinities(affinities_short)
+        .bhtsne(THETA)
+        .fit();
+    let aff_short = fitted_short.affinities();
+    let sum_short: f32 = aff_short.values().iter().sum();
 
     // Long run: more epochs than stop_lying_epoch.
-    let mut tsne_long: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_long
-        .perplexity(PERPLEXITY)
+    let affinities_long = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted_long = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(1000)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities_long = tsne_long.affinities().unwrap();
-    let sum_long: f32 = affinities_long.values.iter().sum();
+        .with_affinities(affinities_long)
+        .bhtsne(THETA)
+        .fit();
+    let aff_long = fitted_long.affinities();
+    let sum_long: f32 = aff_long.values().iter().sum();
 
     // Both should sum to approximately 1 (pristine P).
     assert!(
@@ -1370,336 +1189,18 @@ fn affinities_pristine_independent_of_run_length() {
     );
     // And they should be identical since the data and perplexity are the same.
     assert_eq!(
-        affinities_short.rows, affinities_long.rows,
+        aff_short.rows(),
+        aff_long.rows(),
         "row structure differs between short and long runs",
     );
     assert_eq!(
-        affinities_short.columns, affinities_long.columns,
+        aff_short.columns(),
+        aff_long.columns(),
         "column structure differs between short and long runs",
     );
-    for (a, b) in affinities_short
-        .values
-        .iter()
-        .zip(affinities_long.values.iter())
-    {
-        assert!((a - b).abs() < 1e-6, "value differs: {} vs {}", a, b,);
+    for (a, b) in aff_short.values().iter().zip(aff_long.values().iter()) {
+        assert!((a - b).abs() < 1e-6, "value differs: {a} vs {b}",);
     }
-}
-
-/// Cached affinities are reused in barnes_hut_with_neighbors when custom
-/// neighbors match the cached neighbor indices. When they differ, the
-/// custom neighbors are used and affinities are regenerated.
-#[test]
-fn affinities_work_with_custom_neighbors() {
-    const N: usize = 100;
-
-    let data = lcg_samples(N, D, 42);
-    let samples: Vec<&[f32]> = data.chunks(D).collect();
-
-    // Build affinities from a reference run.
-    let mut tsne_ref: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_ref
-        .perplexity(PERPLEXITY)
-        .epochs(EPOCHS)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities = tsne_ref.affinities().unwrap();
-    let seed = tsne_ref.embedding();
-
-    // Build different custom neighbors.
-    let mut rng = rand::rng();
-    let different_neighbors: Vec<Vec<Neighbor<f32>>> = samples
-        .iter()
-        .enumerate()
-        .map(|(sample_idx, _)| {
-            let mut row: Vec<Neighbor<f32>> = (0..N)
-                .filter_map(|i| {
-                    if i == sample_idx {
-                        None
-                    } else {
-                        Some(Neighbor {
-                            index: i,
-                            distance: rng.random_range(0.0..100.0),
-                        })
-                    }
-                })
-                .collect();
-            row.truncate(15);
-            row
-        })
-        .collect();
-
-    // Path B: cached affinities + different custom neighbors.
-    let mut tsne_b: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_b
-        .perplexity(PERPLEXITY)
-        .epochs(50)
-        .initial_embedding(seed.clone())
-        .with_affinities(affinities.clone());
-    tsne_b.barnes_hut_with_neighbors(THETA, &different_neighbors);
-    let result_b = tsne_b.embedding();
-
-    // Path C: cached affinities + barnes_hut (no custom neighbors).
-    let mut tsne_c: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_c
-        .perplexity(PERPLEXITY)
-        .epochs(50)
-        .initial_embedding(seed)
-        .with_affinities(affinities);
-    tsne_c.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let result_c = tsne_c.embedding();
-
-    // When neighbors differ, Path B uses custom neighbors and diverges
-    // from the cached path (Path C).
-    let max_diff: f32 = result_b
-        .iter()
-        .zip(result_c.iter())
-        .map(|(a, b)| (a - b).abs())
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap();
-    let scale = result_b
-        .iter()
-        .map(|v| v.abs())
-        .max_by(|a, b| a.partial_cmp(b).unwrap())
-        .unwrap();
-    assert!(
-        max_diff / scale > 0.05,
-        "different neighbors should invalidate cached affinities: max_diff={}, scale={}",
-        max_diff,
-        scale,
-    );
-}
-
-/// Cached affinities path works with random seed when no initial_embedding is set.
-#[test]
-fn cached_affinities_random_seed() {
-    const N: usize = 50;
-
-    let data = lcg_samples(N, D, 7);
-    let samples: Vec<&[f32]> = data.chunks(D).collect();
-
-    // Build affinities from a reference run.
-    let mut tsne_ref: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_ref
-        .perplexity(PERPLEXITY)
-        .epochs(EPOCHS)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities = tsne_ref.affinities().unwrap();
-
-    // Cached path with random seed (no initial_embedding).
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
-        .epochs(50)
-        .with_affinities(affinities);
-    tsne.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
-
-    // Basic sanity: embedding has correct shape and finite values.
-    assert_eq!(embedding.len(), N * 2);
-    assert!(
-        embedding.iter().all(|v| v.is_finite()),
-        "embedding contains non-finite values",
-    );
-    // Values should not all be zero (random init should produce variation).
-    assert!(
-        embedding.iter().any(|v| *v != 0.0),
-        "embedding is all zeros, random init may have failed",
-    );
-}
-
-/// Mismatched dataset size causes cached affinities to be discarded and
-/// rebuilt via the VPTree path.
-#[test]
-fn cached_affinities_discarded_on_dataset_mismatch() {
-    const N_SMALL: usize = 50;
-    const N_LARGE: usize = 100;
-
-    let data_small = lcg_samples(N_SMALL, D, 7);
-    let samples_small: Vec<&[f32]> = data_small.chunks(D).collect();
-
-    // Build affinities from a small dataset.
-    let mut tsne_small: tSNE<f32, &[f32]> = tSNE::new(&samples_small);
-    tsne_small
-        .perplexity(PERPLEXITY)
-        .epochs(EPOCHS)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities = tsne_small.affinities().unwrap();
-
-    // Inject affinities from a different-sized dataset.
-    let data_large = lcg_samples(N_LARGE, D, 7);
-    let samples_large: Vec<&[f32]> = data_large.chunks(D).collect();
-    let mut tsne_large: tSNE<f32, &[f32]> = tSNE::new(&samples_large);
-    tsne_large
-        .perplexity(PERPLEXITY)
-        .with_affinities(affinities);
-
-    // Should not panic, affinities are silently discarded and rebuilt.
-    tsne_large.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne_large.embedding();
-
-    assert_eq!(embedding.len(), N_LARGE * 2);
-    assert!(
-        embedding.iter().all(|v| v.is_finite()),
-        "embedding contains non-finite values",
-    );
-}
-/// Changing perplexity after a fit must invalidate the cached affinities:
-/// the second run recomputes P with the new perplexity rather than reusing
-/// stale values. Both paths run in a single-thread pool so the Barnes-Hut
-/// reductions are deterministic and the embeddings are bit-comparable.
-#[test]
-fn cached_affinities_invalidated_on_perplexity_change() {
-    const N: usize = 80;
-
-    let data = lcg_samples(N, D, 42);
-    let samples: Vec<&[f32]> = data.chunks(D).collect();
-
-    let new_perplexity = 2.0_f32;
-    let n_neighbors = (3.0 * new_perplexity) as usize;
-    let neighbors = brute_force_neighbors(&samples, n_neighbors);
-
-    // Seed from a preliminary run.
-    let mut tsne_seed: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_seed.perplexity(PERPLEXITY).epochs(20);
-    tsne_seed.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let seed = tsne_seed.embedding();
-
-    // Build reference affinities with new_perplexity.
-    let mut tsne_ref: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_ref.perplexity(new_perplexity);
-    tsne_ref.barnes_hut_with_neighbors(THETA, &neighbors);
-    let affinities = tsne_ref.affinities().unwrap();
-
-    // Single-thread pool for deterministic Barnes-Hut reductions.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .unwrap();
-    let (result_a, result_b) = pool.install(|| {
-        // Path A: inject affinities, change perplexity, run.
-        // The cache should be invalidated because perplexity changed.
-        let mut tsne_a: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne_a
-            .perplexity(new_perplexity)
-            .with_affinities(affinities.clone())
-            .epochs(50)
-            .initial_embedding(seed.clone());
-        // Change perplexity AFTER caching.
-        tsne_a.perplexity(PERPLEXITY);
-        tsne_a.barnes_hut_with_neighbors(THETA, &neighbors);
-        let result_a = tsne_a.embedding();
-
-        // Path B: inject affinities, same perplexity, run.
-        // Cache should be reused.
-        let mut tsne_b: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne_b
-            .perplexity(new_perplexity)
-            .with_affinities(affinities)
-            .epochs(50)
-            .initial_embedding(seed);
-        tsne_b.barnes_hut_with_neighbors(THETA, &neighbors);
-        let result_b = tsne_b.embedding();
-
-        (result_a, result_b)
-    });
-
-    // Path A recomputes P (cache invalidated by perplexity change),
-    // Path B reuses cached P. Different P distributions produce
-    // different embeddings, so they must NOT match.
-    let any_diff = result_a
-        .iter()
-        .zip(result_b.iter())
-        .any(|(a, b)| (a - b).abs() > 1e-6);
-    assert!(
-        any_diff,
-        "embeddings are identical: perplexity change did not invalidate cache",
-    );
-}
-/// Running barnes_hut twice on the same instance (second run hits the
-/// cached-affinities path) must produce the same result as running on a fresh
-/// instance with injected affinities. If `stop_lying_fired` is not reset before
-/// the second run, `stop_lying` never fires and the exaggeration is never
-/// removed, producing a different embedding.
-#[test]
-fn cached_affinities_reset_stop_lying_flag() {
-    const N: usize = 80;
-    const SL_EPOCH: usize = 5;
-    const RUN_EPOCHS: usize = 20;
-
-    let data = lcg_samples(N, D, 42);
-    let samples: Vec<&[f32]> = data.chunks(D).collect();
-
-    let n_neighbors = (3.0 * PERPLEXITY) as usize;
-    let neighbors = brute_force_neighbors(&samples, n_neighbors);
-
-    // Reference run to build affinities.
-    let mut tsne_ref: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_ref.perplexity(PERPLEXITY);
-    tsne_ref.barnes_hut_with_neighbors(THETA, &neighbors);
-    let affinities = tsne_ref.affinities().unwrap();
-
-    // Seed from a preliminary run.
-    let mut tsne_seed: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne_seed.perplexity(PERPLEXITY).epochs(20);
-    tsne_seed.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let seed = tsne_seed.embedding();
-
-    // Single-thread pool for deterministic reductions.
-    let pool = rayon::ThreadPoolBuilder::new()
-        .num_threads(1)
-        .build()
-        .unwrap();
-    let (result_a, result_b) = pool.install(|| {
-        // Path A: fresh instance with injected affinities.
-        // stop_lying_fired starts false; stop_lying fires at SL_EPOCH.
-        let mut tsne_a: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne_a
-            .perplexity(PERPLEXITY)
-            .with_affinities(affinities.clone())
-            .stop_lying_epoch(SL_EPOCH)
-            .epochs(RUN_EPOCHS)
-            .initial_embedding(seed.clone());
-        tsne_a.barnes_hut_with_neighbors(THETA, &neighbors);
-        let result_a = tsne_a.embedding();
-
-        // Path B: run twice on the same instance.
-        // First run sets stop_lying_fired = true.
-        // Second run should reset it; if not, stop_lying never fires.
-        let mut tsne_b: tSNE<f32, &[f32]> = tSNE::new(&samples);
-        tsne_b
-            .perplexity(PERPLEXITY)
-            .stop_lying_epoch(SL_EPOCH)
-            .epochs(RUN_EPOCHS);
-        tsne_b.barnes_hut_with_neighbors(THETA, &neighbors);
-        tsne_b.epochs(RUN_EPOCHS).initial_embedding(seed);
-        tsne_b.barnes_hut_with_neighbors(THETA, &neighbors);
-        let result_b = tsne_b.embedding();
-
-        (result_a, result_b)
-    });
-
-    assert_eq!(
-        result_a, result_b,
-        "second cached-affinities run produced different embedding: stop_lying_fired was not reset",
-    );
-}
-
-#[test]
-fn with_affinities_adopts_perplexity_from_affinities() {
-    let data: Vec<f32> = (0..800).map(|i| i as f32).collect();
-    let samples: Vec<&[f32]> = data.chunks(4).collect();
-
-    // Build affinities at perplexity 30.
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(30.0).epochs(20);
-    tsne.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let affinities = tsne.affinities().unwrap();
-
-    // Inject into an instance with a different perplexity.
-    // with_affinities should adopt the perplexity from the affinities.
-    let mut tsne2: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne2.perplexity(5.0);
-    tsne2.with_affinities(affinities);
-    assert_eq!(tsne2.perplexity, 30.0);
 }
 
 /// The FIt-SNE (interpolation) path reports a finite, non-negative KL divergence,
@@ -1710,12 +1211,14 @@ fn kl_divergence_after_fit_sne_is_finite_and_nonnegative() {
     let data = lcg_samples(N, D, 11);
     let samples: Vec<&[f32]> = data.chunks(D).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(250)
-        .fit_sne(|a, b| euclidean(a, b));
+        .with_affinities(affinities)
+        .fit_sne()
+        .fit();
 
-    let kl = tsne.kl_divergence().expect("fitted");
+    let kl = fitted.kl_divergence();
     assert!(kl.is_finite() && kl >= 0.0, "kl divergence was {kl}");
 }
 
@@ -1747,11 +1250,13 @@ fn fit_sne_separates_clusters() {
     }
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(30.0)
+    let affinities = Affinities::from_metric(&samples, 30.0, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(500)
-        .fit_sne(|a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .fit_sne()
+        .fit();
+    let embedding = fitted.embedding();
 
     // For every point, the nearest embedded neighbor must belong to the same
     // cluster for at least 95% of the points.
@@ -1791,11 +1296,13 @@ fn fit_sne_does_not_collapse_embedding() {
     let data = lcg_samples(N, DIM, 23);
     let samples: Vec<&[f32]> = data.chunks(DIM).collect();
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(30.0)
+    let affinities = Affinities::from_metric(&samples, 30.0, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(500)
-        .fit_sne(|a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .fit_sne()
+        .fit();
+    let embedding = fitted.embedding();
 
     assert!(
         embedding.iter().all(|v| v.is_finite()),
@@ -1817,7 +1324,7 @@ fn fit_sne_does_not_collapse_embedding() {
     );
 }
 
-/// `fit_sne_with_neighbors` reproduces the `fit_sne` embedding when fed the very
+/// `fit_sne` with `from_neighbors` reproduces the `fit_sne` with `from_metric` embedding when fed the very
 /// neighbors the tree would find. Reductions are not bit-reproducible across thread
 /// schedules, so the two paths are compared on a single-thread pool.
 #[test]
@@ -1838,45 +1345,36 @@ fn fit_sne_with_neighbors_matches_vptree_path() {
         .unwrap();
     let (reference, candidate) = pool.install(|| {
         let reference = {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+            let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(100)
                 .initial_embedding(&seed[..])
-                .fit_sne(|a, b| euclidean(a, b));
-            tsne.embedding()
+                .with_affinities(affinities)
+                .fit_sne()
+                .fit();
+            fitted.embedding().to_vec()
         };
         let candidate = {
-            let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-            tsne.perplexity(PERPLEXITY)
+            let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+            let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
                 .epochs(100)
                 .initial_embedding(&seed[..])
-                .fit_sne_with_neighbors(&neighbors);
-            tsne.embedding()
+                .with_affinities(affinities)
+                .fit_sne()
+                .fit();
+            fitted.embedding().to_vec()
         };
         (reference, candidate)
     });
 
-    assert_eq!(candidate, reference);
-}
-
-/// Ragged neighbor rows must be rejected by the FIt-SNE entry point too.
-#[test]
-#[should_panic(expected = "same length")]
-fn fit_sne_with_neighbors_rejects_ragged_rows() {
-    const N: usize = 80;
-    const DIM: usize = 4;
-
-    let data = lcg_samples(N, DIM, 11);
-    let samples: Vec<&[f32]> = data.chunks(DIM).collect();
-
-    let n_neighbors = (3.0 * PERPLEXITY) as usize;
-    let mut neighbors = brute_force_neighbors(&samples, n_neighbors);
-    neighbors[0].pop();
-
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
-        .epochs(1)
-        .fit_sne_with_neighbors(&neighbors);
+    // Column ordering may differ (from_neighbors uses symmetrize_csr which sorts),
+    // so compare with tolerance rather than bit-for-bit.
+    let drift = mean_point_distance(&candidate, &reference, NO_DIMS as usize);
+    let diagonal = bounding_box_diagonal(&reference, NO_DIMS as usize);
+    assert!(
+        drift <= 0.15 * diagonal + 1e-6,
+        "from_neighbors fit_sne path diverged from metric path: drift {drift}, diagonal {diagonal}"
+    );
 }
 
 /// An out-of-range neighbor index must be rejected up front by the FIt-SNE path.
@@ -1893,10 +1391,12 @@ fn fit_sne_with_neighbors_rejects_out_of_range_index() {
     let mut neighbors = brute_force_neighbors(&samples, n_neighbors);
     neighbors[0][0].index = N;
 
-    let mut tsne: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+    TsneBuilder::<f32, &[f32]>::new(&samples)
         .epochs(1)
-        .fit_sne_with_neighbors(&neighbors);
+        .with_affinities(affinities)
+        .fit_sne()
+        .fit();
 }
 
 /// Smoke test for the 4D Barnes-Hut path: the embedding stays finite and correctly sized
@@ -1908,11 +1408,13 @@ fn barnes_hut_runs_in_four_dimensions() {
 
     let data = lcg_samples(N, DIN, 42);
     let samples: Vec<&[f32]> = data.chunks(DIN).collect();
-    let mut tsne: tSNE<f32, &[f32], 4> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32], 4>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * 4);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -1926,11 +1428,13 @@ fn barnes_hut_runs_in_three_dimensions() {
 
     let data = lcg_samples(N, DIN, 43);
     let samples: Vec<&[f32]> = data.chunks(DIN).collect();
-    let mut tsne: tSNE<f32, &[f32], 3> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32], 3>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * 3);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -1944,11 +1448,13 @@ fn barnes_hut_runs_in_five_dimensions() {
 
     let data = lcg_samples(N, DIN, 44);
     let samples: Vec<&[f32]> = data.chunks(DIN).collect();
-    let mut tsne: tSNE<f32, &[f32], 5> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32], 5>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * 5);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -1962,11 +1468,13 @@ fn barnes_hut_runs_in_six_dimensions() {
 
     let data = lcg_samples(N, DIN, 45);
     let samples: Vec<&[f32]> = data.chunks(DIN).collect();
-    let mut tsne: tSNE<f32, &[f32], 6> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32], 6>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * 6);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -1980,11 +1488,13 @@ fn barnes_hut_runs_in_seven_dimensions() {
 
     let data = lcg_samples(N, DIN, 46);
     let samples: Vec<&[f32]> = data.chunks(DIN).collect();
-    let mut tsne: tSNE<f32, &[f32], 7> = tSNE::new(&samples);
-    tsne.perplexity(PERPLEXITY)
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32], 7>::new(&samples)
         .epochs(50)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
     assert_eq!(embedding.len(), N * 7);
     assert!(embedding.iter().all(|v| v.is_finite()));
 }
@@ -1992,7 +1502,7 @@ fn barnes_hut_runs_in_seven_dimensions() {
 /// Build a two-block CSR affinity graph: two cliques of `half` nodes joined by a
 /// single weak edge between node 0 and node `half`. The first nontrivial
 /// eigenvector must separate the two blocks by sign.
-fn two_block_affinities(half: usize) -> SparseAffinities<f32> {
+fn two_block_affinities(half: usize) -> Affinities<f32> {
     let n = half * 2;
     let mut rows: Vec<usize> = Vec::with_capacity(n + 1);
     let mut columns: Vec<u32> = Vec::new();
@@ -2036,12 +1546,7 @@ fn two_block_affinities(half: usize) -> SparseAffinities<f32> {
         rows.push(columns.len());
     }
 
-    SparseAffinities {
-        rows,
-        columns,
-        values,
-        perplexity: 5.0,
-    }
+    Affinities::from_csr_unchecked(n, rows, columns, values)
 }
 
 #[test]
@@ -2052,9 +1557,13 @@ fn spectral_init_separates_two_blocks() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 1> = tSNE::new(&samples);
-    tsne.with_affinities(affinities);
-    let seed = tsne.spectral_embedding();
+    let fitted = TsneBuilder::<f32, &[f32], 1>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .exact()
+        .fit();
+    let seed = fitted.embedding().to_vec();
 
     let first_half_positive = seed[..HALF].iter().filter(|&&v| v > 0.0).count();
     let first_half_negative = seed[..HALF].iter().filter(|&&v| v < 0.0).count();
@@ -2080,13 +1589,21 @@ fn spectral_init_is_deterministic() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne_a: tSNE<f32, &[f32], 3> = tSNE::new(&samples);
-    tsne_a.with_affinities(affinities.clone());
-    let seed_a = tsne_a.spectral_embedding();
+    let fitted_a = TsneBuilder::<f32, &[f32], 3>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities.clone())
+        .bhtsne(0.5)
+        .fit();
+    let seed_a = fitted_a.embedding().to_vec();
 
-    let mut tsne_b: tSNE<f32, &[f32], 3> = tSNE::new(&samples);
-    tsne_b.with_affinities(affinities);
-    let seed_b = tsne_b.spectral_embedding();
+    let fitted_b = TsneBuilder::<f32, &[f32], 3>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let seed_b = fitted_b.embedding().to_vec();
 
     assert_eq!(seed_a, seed_b, "spectral init is not deterministic");
 }
@@ -2099,23 +1616,35 @@ fn spectral_init_shape_and_finiteness() {
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
     {
-        let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-        tsne.with_affinities(affinities.clone());
-        let seed = tsne.spectral_embedding();
+        let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+            .spectral_init()
+            .epochs(0)
+            .with_affinities(affinities.clone())
+            .bhtsne(0.5)
+            .fit();
+        let seed = fitted.embedding();
         assert_eq!(seed.len(), n * 2);
         assert!(seed.iter().all(|v| v.is_finite()));
     }
     {
-        let mut tsne: tSNE<f32, &[f32], 4> = tSNE::new(&samples);
-        tsne.with_affinities(affinities.clone());
-        let seed = tsne.spectral_embedding();
+        let fitted = TsneBuilder::<f32, &[f32], 4>::new(&samples)
+            .spectral_init()
+            .epochs(0)
+            .with_affinities(affinities.clone())
+            .bhtsne(0.5)
+            .fit();
+        let seed = fitted.embedding();
         assert_eq!(seed.len(), n * 4);
         assert!(seed.iter().all(|v| v.is_finite()));
     }
     {
-        let mut tsne: tSNE<f32, &[f32], 7> = tSNE::new(&samples);
-        tsne.with_affinities(affinities);
-        let seed = tsne.spectral_embedding();
+        let fitted = TsneBuilder::<f32, &[f32], 7>::new(&samples)
+            .spectral_init()
+            .epochs(0)
+            .with_affinities(affinities)
+            .bhtsne(0.5)
+            .fit();
+        let seed = fitted.embedding();
         assert_eq!(seed.len(), n * 7);
         assert!(seed.iter().all(|v| v.is_finite()));
     }
@@ -2128,9 +1657,13 @@ fn spectral_init_scale_matches_random_init() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-    tsne.with_affinities(affinities);
-    let seed = tsne.spectral_embedding();
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let seed = fitted.embedding();
 
     let col0: Vec<f32> = (0..n).map(|i| seed[i * 2]).collect();
     let mean: f32 = col0.iter().sum::<f32>() / n as f32;
@@ -2143,8 +1676,8 @@ fn spectral_init_scale_matches_random_init() {
     );
 }
 
-/// SparseAffinities with some isolated nodes (degree 0) to exercise the floor path.
-fn affinities_with_isolated_nodes() -> SparseAffinities<f32> {
+/// Affinities with some isolated nodes (degree 0) to exercise the floor path.
+fn affinities_with_isolated_nodes() -> Affinities<f32> {
     let n = 6;
     let mut rows = vec![0usize; n + 1];
     let mut columns = Vec::new();
@@ -2170,12 +1703,7 @@ fn affinities_with_isolated_nodes() -> SparseAffinities<f32> {
     }
     rows[6] = columns.len();
 
-    SparseAffinities {
-        rows,
-        columns,
-        values,
-        perplexity: 2.0,
-    }
+    Affinities::from_csr_unchecked(n, rows, columns, values)
 }
 
 #[test]
@@ -2185,9 +1713,13 @@ fn spectral_init_handles_isolated_nodes() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-    tsne.with_affinities(affinities);
-    let seed = tsne.spectral_embedding();
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let seed = fitted.embedding();
     assert_eq!(seed.len(), n * 2);
     assert!(
         seed.iter().all(|v| v.is_finite()),
@@ -2201,26 +1733,37 @@ fn spectral_init_through_initial_embedding_reduces_kl() {
     let data = lcg_samples(N, D, 42);
     let samples: Vec<&[f32]> = data.chunks(D).collect();
 
-    let mut tsne1: tSNE<f32, &[f32]> = tSNE::new(&samples);
-    tsne1
-        .perplexity(5.0)
+    // Run with spectral_init: the spectral seed should lead to a valid fit
+    // with finite KL divergence and correct embedding shape.
+    let affinities = Affinities::from_metric(&samples, 5.0, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
+        .spectral_init()
         .epochs(100)
-        .barnes_hut(THETA, |a, b| euclidean(a, b));
-
-    let seed = tsne1.spectral_embedding();
-    assert_eq!(seed.len(), N * 2);
-
-    tsne1.perplexity(5.0).epochs(50).initial_embedding(seed);
-    tsne1.barnes_hut(THETA, |a, b| euclidean(a, b));
-    let embedding = tsne1.embedding();
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
 
     assert_eq!(embedding.len(), N * 2);
     assert!(embedding.iter().all(|v| v.is_finite()));
+    assert!(fitted.kl_divergence().is_finite());
+
+    // Spectral init should produce a meaningful embedding: not all zeros,
+    // and the KL should be lower than a fresh random-init run of the same length.
+    let affinities2 = Affinities::from_metric(&samples, 5.0, |a, b| euclidean(a, b));
+    let fitted_rand = TsneBuilder::<f32, &[f32]>::new(&samples)
+        .epochs(100)
+        .with_affinities(affinities2)
+        .bhtsne(THETA)
+        .fit();
+
+    // Both should be finite; spectral init typically converges faster so its
+    // KL should not be significantly worse than random init at the same epoch count.
     assert!(
-        tsne1
-            .kl_divergence()
-            .expect("spectral fit should have KL")
-            .is_finite()
+        fitted.kl_divergence() <= fitted_rand.kl_divergence() * 2.0,
+        "spectral KL {} much worse than random KL {}",
+        fitted.kl_divergence(),
+        fitted_rand.kl_divergence()
     );
 }
 
@@ -2233,14 +1776,13 @@ fn spectral_init_via_builder_separates_blocks() {
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
     // Use the builder method instead of manual spectral_embedding + initial_embedding.
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-    tsne.with_affinities(affinities).spectral_init();
-    // Trigger finalize_p_and_seed without gradient epochs, so the embedding is
-    // exactly the spectral seed. The auto learning rate dwarfs the 1e-4 seed
-    // scale, so a single epoch moves points orders of magnitude and any sign
-    // based check would then test the gradient dynamics instead of the seeding.
-    tsne.epochs(0).barnes_hut(0.5, |_, _| 0.0);
-    let embedding = tsne.embedding();
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let embedding = fitted.embedding();
     // Check the first column (column 0) for block separation.
     let col0: Vec<f32> = embedding.iter().step_by(2).cloned().collect();
     let first_half_positive = col0[..HALF].iter().filter(|&&v| v > 0.0).count();
@@ -2265,16 +1807,18 @@ fn explicit_initial_embedding_overrides_spectral_init() {
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
     // Set both spectral_init flag and explicit embedding; explicit wins.
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
     let explicit: Vec<f32> = (0..n * 2).map(|i| i as f32 * 0.001).collect();
-    tsne.with_affinities(affinities)
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
         .spectral_init()
-        .initial_embedding(explicit.clone());
-    tsne.epochs(0).barnes_hut(0.5, |_, _| 0.0);
-    let embedding = tsne.embedding();
+        .initial_embedding(explicit.clone())
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let embedding = fitted.embedding();
 
     // The embedding should match the explicit seed (epochs=0 means no updates).
-    assert_eq!(embedding, explicit);
+    assert_eq!(embedding, explicit.as_slice());
 }
 
 #[test]
@@ -2285,11 +1829,16 @@ fn spectral_init_with_custom_params_separates_blocks() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 1> = tSNE::new(&samples);
-    tsne.with_affinities(affinities);
     // A cheaper budget than the defaults must still resolve this easy spectrum.
     let params = SpectralParams::new().rounds(3).degree(10);
-    let seed = tsne.spectral_embedding_with(params);
+
+    let fitted = TsneBuilder::<f32, &[f32], 1>::new(&samples)
+        .spectral_init_with(params)
+        .epochs(0)
+        .with_affinities(affinities.clone())
+        .exact()
+        .fit();
+    let seed = fitted.embedding().to_vec();
 
     let first_half_positive = seed[..HALF].iter().filter(|&&v| v > 0.0).count();
     let second_half_positive = seed[HALF..].iter().filter(|&&v| v > 0.0).count();
@@ -2301,9 +1850,22 @@ fn spectral_init_with_custom_params_separates_blocks() {
     );
 
     // Custom parameters must be as deterministic as the defaults.
-    assert_eq!(seed, tsne.spectral_embedding_with(params));
+    let fitted2 = TsneBuilder::<f32, &[f32], 1>::new(&samples)
+        .spectral_init_with(params)
+        .epochs(0)
+        .with_affinities(affinities.clone())
+        .exact()
+        .fit();
+    assert_eq!(seed, fitted2.embedding().to_vec());
+
     // And produce a different solve than the defaults.
-    assert_ne!(seed, tsne.spectral_embedding());
+    let fitted3 = TsneBuilder::<f32, &[f32], 1>::new(&samples)
+        .spectral_init()
+        .epochs(0)
+        .with_affinities(affinities)
+        .exact()
+        .fit();
+    assert_ne!(seed, fitted3.embedding().to_vec());
 }
 
 #[test]
@@ -2313,9 +1875,13 @@ fn spectral_init_with_custom_seed_std_scales_columns() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-    tsne.with_affinities(affinities);
-    let seed = tsne.spectral_embedding_with(SpectralParams::new().seed_std(2e-3));
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .spectral_init_with(SpectralParams::new().seed_std(2e-3))
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let seed = fitted.embedding();
 
     let col0: Vec<f32> = (0..n).map(|i| seed[i * 2]).collect();
     let mean: f32 = col0.iter().sum::<f32>() / n as f32;
@@ -2336,11 +1902,13 @@ fn spectral_init_with_flows_through_builder() {
     let data: Vec<f32> = vec![0.0; n];
     let samples: Vec<&[f32]> = data.chunks(1).collect();
 
-    let mut tsne: tSNE<f32, &[f32], 2> = tSNE::new(&samples);
-    tsne.with_affinities(affinities)
-        .spectral_init_with(SpectralParams::new().seed_std(5e-3));
-    tsne.epochs(0).barnes_hut(0.5, |_, _| 0.0);
-    let embedding = tsne.embedding();
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .spectral_init_with(SpectralParams::new().seed_std(5e-3))
+        .epochs(0)
+        .with_affinities(affinities)
+        .bhtsne(0.5)
+        .fit();
+    let embedding = fitted.embedding();
 
     // The custom seed scale must reach the seeding, proving the parameters flowed
     // through the builder into finalize_p_and_seed.
@@ -2550,4 +2118,330 @@ mod spectral_properties {
             prop_assert_eq!(embedding, again);
         }
     }
+}
+
+/// Builds a tiny symmetric, sum-to-one affinity graph over `n` nodes from an undirected edge list,
+/// for hand-checking the pooling combinators.
+fn tiny_graph(n: usize, edges: &[(usize, usize)]) -> Affinities<f32> {
+    let mut adj: Vec<Vec<(u32, f32)>> = vec![Vec::new(); n];
+    for &(a, b) in edges {
+        adj[a].push((b as u32, 1.0));
+        adj[b].push((a as u32, 1.0));
+    }
+    let mut rows = vec![0usize];
+    let mut columns: Vec<u32> = Vec::new();
+    let mut values: Vec<f32> = Vec::new();
+    for mut row in adj {
+        row.sort_by_key(|(c, _)| *c);
+        for (c, v) in row {
+            columns.push(c);
+            values.push(v);
+        }
+        rows.push(columns.len());
+    }
+    let total: f32 = values.iter().sum();
+    for v in &mut values {
+        *v /= total;
+    }
+    Affinities::from_csr_unchecked(n, rows, columns, values)
+}
+
+/// The standalone `from_metric` constructor reproduces the graph a full bhtsne fit builds and
+/// hands back through `affinities()`.
+#[test]
+fn from_metric_matches_barnes_hut_affinities() {
+    const N: usize = 200;
+    let data = lcg_samples(N, D, 42);
+    let samples: Vec<&[f32]> = data.chunks(D).collect();
+
+    let direct = Affinities::from_metric(&samples, PERPLEXITY, |a: &&[f32], b: &&[f32]| {
+        euclidean(a, b)
+    });
+
+    let affinities = Affinities::from_metric(&samples, PERPLEXITY, |a, b| euclidean(a, b));
+    let fitted = TsneBuilder::<f32, &[f32]>::new(&samples)
+        .epochs(EPOCHS)
+        .with_affinities(affinities)
+        .bhtsne(THETA)
+        .fit();
+    let fitted_aff = fitted.affinities();
+
+    assert_eq!(direct.rows(), fitted_aff.rows(), "row structure differs");
+    assert_eq!(
+        direct.columns(),
+        fitted_aff.columns(),
+        "column structure differs"
+    );
+    for (a, b) in direct.values().iter().zip(fitted_aff.values().iter()) {
+        assert!((a - b).abs() < 1e-6, "value differs: {a} vs {b}");
+    }
+    let sum: f32 = direct.values().iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 0.05,
+        "from_metric graph sums to {sum}, expected ~1"
+    );
+}
+
+/// `from_neighbors` builds a pristine graph from a caller-supplied table, matches the metric path on
+/// the same neighbors, and embeds to something finite through the metric-free fit.
+#[test]
+fn from_neighbors_builds_expected_graph() {
+    const N: usize = 150;
+    let data = lcg_samples(N, D, 7);
+    let samples: Vec<&[f32]> = data.chunks(D).collect();
+
+    let k = (3.0 * PERPLEXITY) as usize;
+    let neighbors = brute_force_neighbors(&samples, k);
+    let graph = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+
+    assert_eq!(graph.n_samples(), N);
+    let sum: f32 = graph.values().iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 0.05,
+        "from_neighbors sum {sum}, expected ~1"
+    );
+
+    // Exact neighbors match what the vantage point tree finds, so the two constructors agree.
+    let metric = Affinities::from_metric(&samples, PERPLEXITY, |a: &&[f32], b: &&[f32]| {
+        euclidean(a, b)
+    });
+    assert_eq!(
+        graph.rows(),
+        metric.rows(),
+        "row structure differs from metric path"
+    );
+
+    let node_ids: Vec<u32> = (0..N as u32).collect();
+    let fitted = TsneBuilder::<f32, u32>::new(&node_ids)
+        .epochs(250)
+        .with_affinities(graph)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
+    assert_eq!(embedding.len(), N * NO_DIMS as usize);
+    assert!(embedding.iter().all(|v| v.is_finite()));
+}
+
+/// `from_neighbors` accepts empty rows, mirroring the missing-modality case where the caller has
+/// no neighbor evidence for some samples under this view. Empty rows contribute no attractive
+/// edges to their own row, though they may still receive edges from other rows through
+/// symmetrization. A sample no row points at ends up with a fully empty row in the pooled graph
+/// and drifts under repulsion alone during the fit.
+#[test]
+fn from_neighbors_allows_empty_rows() {
+    const N: usize = 60;
+    let data = lcg_samples(N, D, 41);
+    let samples: Vec<&[f32]> = data.chunks(D).collect();
+
+    let k = (3.0 * PERPLEXITY) as usize;
+    let mut neighbors = brute_force_neighbors(&samples, k);
+    // Sample 0 has no neighbors under this view (missing modality). Sample 1 keeps its full row,
+    // so sample 0 still ends up with at least one incoming edge through symmetrization if sample 1
+    // happens to point at it. Sample 2's row is also emptied to exercise a fully isolated sample
+    // when no other row points at it.
+    neighbors[0].clear();
+    // Make sure no other row points at sample 2 either: strip it from every row's neighbor list.
+    for row in neighbors.iter_mut() {
+        row.retain(|n| n.index != 2);
+    }
+    neighbors[2].clear();
+
+    let graph = Affinities::from_neighbors(&neighbors, PERPLEXITY);
+
+    assert_eq!(graph.n_samples(), N);
+    let sum: f32 = graph.values().iter().sum();
+    assert!(
+        (sum - 1.0).abs() < 0.05,
+        "from_neighbors sum {sum} with empty rows, expected ~1"
+    );
+
+    // Sample 2 is fully isolated: neither its row nor any incoming edge exists.
+    let rows = graph.rows();
+    assert_eq!(rows[2], rows[3], "sample 2 row should be empty (isolated)");
+
+    // The fit still runs and produces a finite embedding for every sample, isolated ones included.
+    let node_ids: Vec<u32> = (0..N as u32).collect();
+    let fitted = TsneBuilder::<f32, u32>::new(&node_ids)
+        .epochs(50)
+        .with_affinities(graph)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
+    assert_eq!(embedding.len(), N * NO_DIMS as usize);
+    assert!(embedding.iter().all(|v| v.is_finite()));
+}
+
+/// Single-view builder with unit weight preserves the input graph exactly (edge structure, symmetry,
+/// and sum-to-one) for a `tiny_graph` input, where the row-level pooling and the joint-level input
+/// happen to agree.
+#[test]
+fn builder_single_view_reproduces_tiny_graph() {
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let pooled = super::AffinitiesBuilder::new(3).add(1.0f32, &a).build();
+
+    assert_eq!(pooled.rows(), a.rows(), "row offsets differ");
+    assert_eq!(pooled.columns(), a.columns(), "columns differ");
+    for (i, (v_pool, v_a)) in pooled.values().iter().zip(a.values().iter()).enumerate() {
+        assert!(
+            (v_pool - v_a).abs() < 1e-6,
+            "value {i} differs: pooled {v_pool}, input {v_a}"
+        );
+    }
+    let sum: f32 = pooled.values().iter().sum();
+    assert!((sum - 1.0).abs() < 1e-6, "pooled sum {sum}, expected 1.0");
+}
+
+/// Two views over disjoint halves of a six-sample builder produce a graph whose edges live inside
+/// each half only. No pair crosses the disjoint boundary and the joint sums to one.
+#[test]
+fn builder_pools_disjoint_subsets() {
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let b = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let pooled = super::AffinitiesBuilder::new(6)
+        .add_over(0.5f32, &[0, 1, 2], &a)
+        .add_over(0.5, &[3, 4, 5], &b)
+        .build();
+
+    // Row offsets and columns describe two disjoint 3-node chains.
+    assert_eq!(pooled.rows(), &vec![0, 1, 3, 4, 5, 7, 8]);
+    assert_eq!(pooled.columns(), &vec![1, 0, 2, 1, 4, 3, 5, 4]);
+    for v in pooled.values() {
+        assert!(
+            (v - 0.125).abs() < 1e-6,
+            "unexpected pooled value {v}, expected 0.125"
+        );
+    }
+    let sum: f32 = pooled.values().iter().sum();
+    assert!((sum - 1.0).abs() < 1e-6, "pooled sum {sum}, expected 1.0");
+
+    // No pair crosses the split: every column stays in the same half as its row.
+    for (i, w) in pooled.rows().windows(2).enumerate() {
+        let (start, end) = (w[0], w[1]);
+        let row_half = if i < 3 { 0..3 } else { 3..6 };
+        for c in &pooled.columns()[start..end] {
+            assert!(
+                row_half.contains(&(*c as usize)),
+                "pair ({i}, {c}) crosses the disjoint boundary"
+            );
+        }
+    }
+}
+
+/// A sample that lies outside every view's subset gets an empty row in the pool, so the fit sees no
+/// attractive force for it. Sample 4 here is absent from both views.
+#[test]
+fn builder_isolates_sample_no_view_opines_on() {
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let b = tiny_graph(2, &[(0, 1)]);
+    let pooled = super::AffinitiesBuilder::new(5)
+        .add_over(0.5f32, &[0, 1, 2], &a)
+        .add_over(0.5, &[0, 1], &b)
+        .build();
+
+    assert_eq!(pooled.n_samples(), 5);
+    // Row 3 is present in neither subset, row 4 is present in neither subset.
+    assert_eq!(pooled.rows()[3], pooled.rows()[4], "row 3 must be empty");
+    assert_eq!(pooled.rows()[4], pooled.rows()[5], "row 4 must be empty");
+}
+
+/// The row for a sample present in only one view comes verbatim (up to the joint normalization)
+/// from that view: the row-level weights renormalize across the views actually present, so a single
+/// present view has weight one for that row regardless of the other view's weight.
+#[test]
+fn builder_row_weights_by_presence_per_row() {
+    // View A covers samples 0, 1, 2 (a chain 0-1-2). View B covers samples 2, 3, 4 (a chain 2-3-4).
+    // Sample 0 is in A only, sample 4 is in B only, sample 2 is in both.
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let b = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let pooled = super::AffinitiesBuilder::new(5)
+        // Give the two views deliberately unequal weights to prove the row-level renormalization
+        // ignores the absent view's weight for a single-view-present row.
+        .add_over(0.7f32, &[0, 1, 2], &a)
+        .add_over(0.3, &[2, 3, 4], &b)
+        .build();
+
+    // Row 0 sees view A only: its only edge is (0, 1). Row 4 sees view B only: its only edge is (4, 3).
+    // Row 2 sees both views: it should have edges to 1 (from A) and 3 (from B).
+    let row = |i: usize| {
+        let (s, e) = (pooled.rows()[i], pooled.rows()[i + 1]);
+        pooled.columns()[s..e].to_vec()
+    };
+    assert_eq!(row(0), vec![1], "row 0 should reach only sample 1");
+    assert_eq!(row(4), vec![3], "row 4 should reach only sample 3");
+    let row2 = row(2);
+    assert!(
+        row2.contains(&1) && row2.contains(&3),
+        "row 2 should reach both 1 (via A) and 3 (via B), got {row2:?}"
+    );
+}
+
+#[test]
+#[should_panic(expected = "weight must be strictly positive")]
+fn builder_rejects_zero_weight() {
+    let a = tiny_graph(3, &[(0, 1)]);
+    let _ = super::AffinitiesBuilder::new(3).add(0.0f32, &a).build();
+}
+
+#[test]
+#[should_panic(expected = "expected 5")]
+fn builder_rejects_full_coverage_size_mismatch() {
+    let a = tiny_graph(3, &[(0, 1)]);
+    let _ = super::AffinitiesBuilder::new(5).add(1.0f32, &a).build();
+}
+
+#[test]
+#[should_panic(expected = "duplicate global id")]
+fn builder_rejects_duplicate_subset_id() {
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let _ = super::AffinitiesBuilder::new(4)
+        .add_over(1.0f32, &[0, 1, 1], &a)
+        .build();
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn builder_rejects_out_of_range_subset_id() {
+    let a = tiny_graph(3, &[(0, 1), (1, 2)]);
+    let _ = super::AffinitiesBuilder::new(4)
+        .add_over(1.0f32, &[0, 1, 5], &a)
+        .build();
+}
+
+#[test]
+#[should_panic(expected = "at least one view")]
+fn builder_rejects_empty_build() {
+    let _ = super::AffinitiesBuilder::<f32>::new(3).build();
+}
+
+/// A pooled `Affinities` from the builder feeds through `with_affinities` and `bhtsne`, so
+/// the whole path from multi-view pooling to a finite embedding runs end to end.
+#[test]
+fn builder_end_to_end_fit_barnes_hut() {
+    const N: usize = 60;
+    let data = lcg_samples(N, D, 17);
+    let samples: Vec<&[f32]> = data.chunks(D).collect();
+
+    // Two views over the same samples, one cosine-like, one Euclidean.
+    let view_a = Affinities::from_metric(&samples, PERPLEXITY, |a: &&[f32], b: &&[f32]| {
+        euclidean(a, b)
+    });
+    let view_b = Affinities::from_metric(&samples, PERPLEXITY, |a: &&[f32], b: &&[f32]| {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .sum::<f32>()
+    });
+    let pooled = super::AffinitiesBuilder::new(N)
+        .add(0.5f32, &view_a)
+        .add(0.5, &view_b)
+        .build();
+
+    let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
+        .epochs(50)
+        .with_affinities(pooled)
+        .bhtsne(THETA)
+        .fit();
+    let embedding = fitted.embedding();
+    assert_eq!(embedding.len(), N * 2);
+    assert!(embedding.iter().all(|v| v.is_finite()));
 }

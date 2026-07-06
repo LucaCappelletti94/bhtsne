@@ -109,13 +109,12 @@ const CHEBYSHEV_INITIAL_BOUND: f64 = 0.75;
 const REDUCTION_ROWS: usize = 4096;
 
 /// Tunable parameters of the spectral embedding initialization, accepted by
-/// [`tSNE::spectral_init_with`] and [`tSNE::spectral_embedding_with`]. The defaults
-/// resolve the leading eigenvectors of a 70k point MNIST affinity graph to a
-/// fraction of a degree, so tuning is only warranted to trade accuracy for speed or
-/// to handle unusually structured graphs.
+/// [`TsneBuilder::spectral_init_with`]. The defaults resolve the leading eigenvectors of a 70k
+/// point MNIST affinity graph to a fraction of a degree, so tuning is only warranted to trade
+/// accuracy for speed or to handle unusually structured graphs.
 ///
-/// The solver's work is proportional to `rounds * degree` sparse matvecs over the
-/// affinity graph, each spanning the `D + 8` columns of the block.
+/// The solver's work is proportional to `rounds * degree` sparse matvecs over the affinity
+/// graph, each spanning the `D + 8` columns of the block.
 ///
 /// ```
 /// use bhtsne::SpectralParams;
@@ -123,8 +122,7 @@ const REDUCTION_ROWS: usize = 4096;
 /// let params = SpectralParams::new().rounds(3).degree(12);
 /// ```
 ///
-/// [`tSNE::spectral_init_with`]: crate::tSNE::spectral_init_with
-/// [`tSNE::spectral_embedding_with`]: crate::tSNE::spectral_embedding_with
+/// [`TsneBuilder::spectral_init_with`]: crate::TsneBuilder::spectral_init_with
 #[derive(Clone, Copy, Debug)]
 pub struct SpectralParams {
     pub(crate) rounds: usize,
