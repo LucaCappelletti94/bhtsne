@@ -31,7 +31,7 @@ const N_FEATURES: usize = 1433;
 const N_CLASSES: usize = 7;
 /// Embedding dimensionality. The Barnes-Hut fit supports 2 or 3.
 const DIM: usize = 2;
-const PERPLEXITY: f32 = 30.0;
+const PERPLEXITY: f64 = 30.0;
 const THETA: f32 = 0.5;
 const EPOCHS: usize = 1000;
 /// Neighbors per node in the shortest-path view, about `3 * perplexity` as elsewhere in the crate.
@@ -153,9 +153,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // View E fuses the shortest-path graph and the features linearly (union of edges) through the
     // affinities builder.
     let view_mixed = AffinitiesBuilder::new(n)
-        .add(ALPHA, &view_hops)
-        .add(1.0 - ALPHA, &view_features)
-        .build();
+        .add(ALPHA, &view_hops)?
+        .add(1.0 - ALPHA, &view_features)?
+        .build()?;
     println!("  built mixed (union) affinities");
 
     // Embed each graph. Every fit is metric-free: it consumes the prebuilt graph and never searches

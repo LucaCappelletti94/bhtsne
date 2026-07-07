@@ -1,5 +1,6 @@
 pub(super) mod fft;
 pub(super) mod interpolation;
+pub(crate) mod pca;
 pub(super) mod spectral;
 pub(crate) mod vptree;
 
@@ -840,5 +841,40 @@ pub(crate) fn compute_edge_forces<T, const D: usize>(
         for axis in 0..D {
             positive_forces_row[axis] += factor * displacement[axis];
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::search_beta;
+
+    /// Regression test for the Gaussian bandwidth binary search. When neighbor distances are
+    /// heterogeneous and noticeably larger than one, the optimal beta lies below one and the
+    /// bisection has to walk down there. If the initial upper bound stays at one, the search
+    /// clamps beta above the optimum, KL diverges, and the conditional distribution degenerates.
+    #[test]
+    fn search_beta_converges_when_optimal_beta_below_one() {
+        // 90 neighbours (3 * perplexity) with squared distances spread over [20, 120]. The
+        // optimal beta for perplexity 30 is roughly 0.08.
+        let distances_row: Vec<f64> = (0..90)
+            .map(|i| (20.0 + 100.0 * (i as f64 + 1.0) / 90.0_f64).sqrt())
+            .collect();
+        let mut p_values_row: Vec<f64> = vec![0.0; 90];
+        let perplexity = 30.0;
+
+        search_beta(&mut p_values_row, &distances_row, &perplexity);
+
+        let entropy: f64 = p_values_row
+            .iter()
+            .copied()
+            .filter(|&p| p > 0.0)
+            .map(|p| -p * p.ln())
+            .sum();
+        let effective_perplexity = entropy.exp();
+
+        assert!(
+            (effective_perplexity - perplexity).abs() < 0.1,
+            "expected effective perplexity of ~{perplexity}, got {effective_perplexity}"
+        );
     }
 }

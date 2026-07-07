@@ -26,7 +26,7 @@ pub use {
 pub use affinities::{Affinities, AffinitiesBuilder, Neighbor};
 
 /// Error type re-exports.
-pub use error::FromCsrError;
+pub use error::{AffinitiesBuilderError, FromCsrError, FromShortestPathError, PcaError};
 
 /// Fit builder and result re-exports.
 pub use fit::{
@@ -43,4 +43,4 @@ pub type EpochCallback<'d, T> = Box<dyn FnMut(usize, &[T]) + 'd>;
 pub(crate) const PARALLEL_CODE_THRESHOLD: usize = 4096;
 
 #[cfg(test)]
-mod test;
+mod testing;

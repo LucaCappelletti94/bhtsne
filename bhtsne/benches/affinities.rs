@@ -11,7 +11,7 @@ use bhtsne::Affinities;
 use common::{brute_force_neighbors, euclidean, lcg};
 
 const DIM: usize = 128;
-const PERPLEXITY: f32 = 30.0;
+const PERPLEXITY: f64 = 30.0;
 const SIZES: [usize; 4] = [500, 1000, 2000, 4000];
 
 fn bench_affinities(c: &mut Criterion) {

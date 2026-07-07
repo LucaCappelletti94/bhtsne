@@ -13,7 +13,7 @@ use bhtsne::{Affinities, TsneBuilder};
 use common::{euclidean, lcg};
 
 const DIM: usize = 128;
-const PERPLEXITY: f32 = 30.0;
+const PERPLEXITY: f64 = 30.0;
 const SIZES: [usize; 6] = [500, 1000, 2000, 4000, 10000, 20000];
 
 fn bench_d2(c: &mut Criterion) {

@@ -22,22 +22,30 @@ bhtsne = "0.8"
 
 ## Basic use
 
-Build an `Affinities` graph, pass it through a fit builder, and read the embedding off the returned `Fitted*` result. `Affinities::from_l2` is sugar for the Euclidean metric; `from_cosine` is sugar for L2-normalized rows; `from_metric(&data, perplexity, metric)` accepts any `Fn(&U, &U) -> T` for custom types.
+Build an `Affinities` graph, pass it through a fit builder, and read the embedding off the returned `Fitted*` result. `Affinities::from_l2` is sugar for the Euclidean metric with PCA-reduction to a fixed target dimensionality; `from_cosine` is the same for L2-normalized rows (uncentered PCA to preserve unit norm); `from_metric(&data, perplexity, metric)` accepts any `Fn(&U, &U) -> T` for custom types and skips PCA.
 
 ```rust
 use bhtsne::{Affinities, TsneBuilder};
 
-// Thirty points on two 3-dimensional blobs.
-let raw: Vec<[f32; 3]> = (0..30)
+// Sixty points on two 12-dimensional blobs. In real use the input is often much wider
+// (raw pixels, TF-IDF, feature stacks); PCA-reducing to a lower `target_dim` before t-SNE is
+// standard practice and required by `from_l2`.
+let raw: Vec<[f32; 12]> = (0..60)
     .map(|i| {
-        let cluster = (i / 15) as f32;
-        let angle = (i % 15) as f32 * 0.4;
-        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
+        let cluster = (i / 30) as f32;
+        let angle = (i % 30) as f32 * 0.2;
+        let mut row = [0.0f32; 12];
+        row[0] = cluster * 4.0 + angle.cos();
+        row[1] = cluster * 4.0 + angle.sin();
+        for slot in row.iter_mut().skip(2) {
+            *slot = 0.05 * (angle * 3.7).sin();
+        }
+        row
     })
     .collect();
 let samples: Vec<&[f32]> = raw.iter().map(|row| row.as_slice()).collect();
 
-let affinities = Affinities::from_l2(&samples, 5.0_f32);
+let affinities = Affinities::from_l2(&samples, 4, 10.0).unwrap();
 let fitted = TsneBuilder::<f32, &[f32], 2>::new(&samples)
     .epochs(250)
     .with_affinities(affinities)
@@ -60,30 +68,46 @@ When one similarity does not capture the whole story (features on one side, a gr
 ```rust
 use bhtsne::{Affinities, AffinitiesBuilder, TsneBuilder};
 
-// Thirty samples with two independent 3-dimensional feature views over the same rows.
-let view_a_raw: Vec<[f32; 3]> = (0..30)
+// Sixty samples with two independent 12-dimensional feature views over the same rows.
+let view_a_raw: Vec<[f32; 12]> = (0..60)
     .map(|i| {
-        let cluster = (i / 15) as f32;
-        let angle = (i % 15) as f32 * 0.4;
-        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
+        let cluster = (i / 30) as f32;
+        let angle = (i % 30) as f32 * 0.2;
+        let mut row = [0.0f32; 12];
+        row[0] = cluster * 4.0 + angle.cos();
+        row[1] = cluster * 4.0 + angle.sin();
+        for slot in row.iter_mut().skip(2) {
+            *slot = 0.05 * (angle * 3.7).sin();
+        }
+        row
     })
     .collect();
-let view_b_raw: Vec<[f32; 3]> = (0..30)
+let view_b_raw: Vec<[f32; 12]> = (0..60)
     .map(|i| {
         let cluster = (i % 2) as f32;
-        let t = (i as f32) * 0.3;
-        [cluster * 3.0, t.sin(), t.cos()]
+        let t = (i as f32) * 0.15;
+        let mut row = [0.0f32; 12];
+        row[0] = cluster * 3.0;
+        row[1] = t.sin();
+        row[2] = t.cos();
+        for slot in row.iter_mut().skip(3) {
+            *slot = 0.05 * (t * 5.3).cos();
+        }
+        row
     })
     .collect();
 let view_a_rows: Vec<&[f32]> = view_a_raw.iter().map(|r| r.as_slice()).collect();
 let view_b_rows: Vec<&[f32]> = view_b_raw.iter().map(|r| r.as_slice()).collect();
 
-let view_a = Affinities::from_l2(&view_a_rows, 5.0_f32);
-let view_b = Affinities::from_l2(&view_b_rows, 5.0_f32);
+let view_a = Affinities::from_l2(&view_a_rows, 4, 10.0).unwrap();
+let view_b = Affinities::from_l2(&view_b_rows, 4, 10.0).unwrap();
 let pooled = AffinitiesBuilder::new(view_a_rows.len())
     .add(0.5, &view_a)
+    .unwrap()
     .add(0.5, &view_b)
-    .build();
+    .unwrap()
+    .build()
+    .unwrap();
 
 let node_ids: Vec<u32> = (0..view_a_rows.len() as u32).collect();
 let fitted = TsneBuilder::<f32, u32, 2>::new(&node_ids)
@@ -100,27 +124,33 @@ assert!(fitted.embedding().iter().all(|v| v.is_finite()));
 
 When features or similarities are only defined for a subset of the samples (missing modalities, partly disconnected graphs, one modality dropping out for some rows), build each view locally over its own samples and pool with `add_over(weight, &subset, &view)`. Each view carries its own local `0..k` indexing, and `subset[i]` names the global id of the view's `i`th local sample. Samples the view has no opinion on stay out of that view's row-normalized contribution; a sample no view opines on keeps an empty row in the pooled graph and drifts under repulsion alone during the fit.
 
-The example below has forty global samples: the first twenty-five carry a feature vector, the last twenty-five carry a precomputed neighbor list arranged in a ring, so the middle ten samples appear in both modalities, the outer thirty appear in only one, and no sample is missing from both.
+The example below has fifty global samples: the first thirty carry a twelve-dimensional feature vector (PCA-reduced to four dimensions), the last thirty carry a precomputed neighbor list arranged in a ring, so the middle ten samples appear in both modalities, the outer twenty appear in only one, and no sample is missing from both.
 
 ```rust
 use bhtsne::{Affinities, AffinitiesBuilder, Neighbor, TsneBuilder};
 
-const N: usize = 40;
+const N: usize = 50;
 
-// Feature view: samples 0..25 have a 3-dimensional feature vector; samples 25..40 do not.
-let feature_raw: Vec<[f32; 3]> = (0..25)
+// Feature view: samples 0..30 have a 12-dimensional feature vector; samples 30..50 do not.
+let feature_raw: Vec<[f32; 12]> = (0..30)
     .map(|i| {
-        let cluster = (i / 12) as f32;
-        let angle = (i % 12) as f32 * 0.5;
-        [cluster * 4.0 + angle.cos(), cluster * 4.0 + angle.sin(), 0.0]
+        let cluster = (i / 15) as f32;
+        let angle = (i % 15) as f32 * 0.4;
+        let mut row = [0.0f32; 12];
+        row[0] = cluster * 4.0 + angle.cos();
+        row[1] = cluster * 4.0 + angle.sin();
+        for slot in row.iter_mut().skip(2) {
+            *slot = 0.05 * (angle * 3.7).sin();
+        }
+        row
     })
     .collect();
 let feature_rows: Vec<&[f32]> = feature_raw.iter().map(|r| r.as_slice()).collect();
-let featured: Vec<usize> = (0..25).collect();
-let feature_view = Affinities::from_l2(&feature_rows, 5.0_f32);
+let featured: Vec<usize> = (0..30).collect();
+let feature_view = Affinities::from_l2(&feature_rows, 4, 8.0).unwrap();
 
-// Graph view: samples 15..40 have a precomputed neighbor list arranged in a ring.
-let neighbored: Vec<usize> = (15..40).collect();
+// Graph view: samples 20..50 have a precomputed neighbor list arranged in a ring.
+let neighbored: Vec<usize> = (20..50).collect();
 let k = neighbored.len();
 let mut neighbors: Vec<Vec<Neighbor<f32>>> = vec![Vec::new(); k];
 for local in 0..k {
@@ -129,12 +159,15 @@ for local in 0..k {
     neighbors[local].push(Neighbor { index: prev, distance: 1.0 });
     neighbors[local].push(Neighbor { index: next, distance: 1.0 });
 }
-let graph_view = Affinities::from_neighbors(&neighbors, 5.0_f32);
+let graph_view = Affinities::from_neighbors(&neighbors, 8.0);
 
 let pooled = AffinitiesBuilder::new(N)
     .add_over(0.5, &featured, &feature_view)
+    .unwrap()
     .add_over(0.5, &neighbored, &graph_view)
-    .build();
+    .unwrap()
+    .build()
+    .unwrap();
 
 let node_ids: Vec<u32> = (0..N as u32).collect();
 let fitted = TsneBuilder::<f32, u32, 2>::new(&node_ids)

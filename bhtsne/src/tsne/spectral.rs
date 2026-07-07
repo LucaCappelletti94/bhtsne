@@ -527,7 +527,7 @@ where
 /// `accumulate`, then combines the partial buffers serially in chunk order. The result
 /// is therefore independent of rayon's scheduling, which keeps the embedding
 /// reproducible run to run.
-fn chunked_column_reduce<T, F>(n: usize, width: usize, accumulate: F) -> Vec<T>
+pub(crate) fn chunked_column_reduce<T, F>(n: usize, width: usize, accumulate: F) -> Vec<T>
 where
     T: Float + AddAssign + Send + Sync,
     F: Fn(Range<usize>, &mut [T]) + Send + Sync,
@@ -552,26 +552,11 @@ where
     total
 }
 
-/// Euclidean norm of column `c` of the flat row-major block, via a deterministic
-/// reduction.
-fn column_norm<T>(v: &[T], n: usize, k: usize, c: usize) -> T
-where
-    T: Float + AddAssign + Send + Sync,
-{
-    chunked_column_reduce(n, 1, |range, acc: &mut [T]| {
-        for i in range {
-            let val = v[i * k + c];
-            acc[0] += val * val;
-        }
-    })[0]
-        .sqrt()
-}
-
 /// Deterministic uniform value in `[-0.5, 0.5)` derived from a splitmix64 hash of the
 /// entry index. Gives the subspace iteration a reproducible random start without
 /// touching the crate RNG.
 #[inline]
-fn splitmix_unit<T: Float>(index: u64) -> T {
+pub(crate) fn splitmix_unit<T: Float>(index: u64) -> T {
     let mut z = index.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
@@ -634,64 +619,86 @@ fn matvec_combine<T, S>(
         });
 }
 
-/// Orthonormalizes the `k` columns of the flat row-major block with classical
-/// Gram-Schmidt against the Perron vector `v0` and all previous columns, batching the
-/// dot products into a single deterministic reduction per pass. The projection runs
-/// twice per column (CGS2), which restores orthogonality where a single classical
-/// Gram-Schmidt pass loses it to cancellation in `f32`.
+/// Orthonormalizes the `k` columns of the flat row-major block with classical Gram-Schmidt
+/// against the Perron vector `v0` and all previous columns, batching the dot products into a
+/// single deterministic reduction per pass. The projection runs twice per column (CGS2), which
+/// restores orthogonality where a single classical Gram-Schmidt pass loses it to cancellation
+/// in `f32`.
 ///
-/// A column whose residual norm does not exceed `sqrt(eps)` of its starting norm is
-/// pure rounding noise, and normalizing that noise (correlated across columns) would
-/// hand Rayleigh-Ritz a rank-deficient basis with meaningless values, which an
-/// aggressive filter causes whenever the graph has fewer well separated leading
-/// eigenvectors than the block is wide. Such a column is replaced by a fresh
-/// deterministic pseudo random direction and reorthogonalized, and zeroed if it
-/// collapses again.
-fn orthonormalize_block<T>(v: &mut [T], n: usize, k: usize, v0: &[T], refresh_seed: u64)
+/// A column whose residual norm does not exceed `sqrt(eps)` of its starting norm is pure
+/// rounding noise, and normalizing that noise (correlated across columns) would hand
+/// Rayleigh-Ritz a rank-deficient basis with meaningless values, which an aggressive filter
+/// causes whenever the graph has fewer well separated leading eigenvectors than the block is
+/// wide. Such a column is replaced by a fresh deterministic pseudo random direction and
+/// reorthogonalized, and zeroed if it collapses again.
+///
+/// Runs serially. The arithmetic is `2 * n * k^2` mul-adds, dominated at the sizes this crate
+/// touches (PCA `d * kk ≈ 36k`, spectral MNIST-scale `n * k ≤ 560k`) by rayon fork-join
+/// overhead when parallelized. A prior version dispatched to a parallel implementation above
+/// `n * k > 200_000`; measurements showed the parallel path never won for any workload the
+/// crate is tested against and lost by ~10x on the shapes it actually runs, so the parallel
+/// variant was removed. If a future workload with `n * k` well above 2M appears, reintroduce
+/// parallelism against a benchmark rather than as speculative dispatch.
+pub(crate) fn orthonormalize_block<T>(v: &mut [T], n: usize, k: usize, v0: &[T], refresh_seed: u64)
 where
-    T: Float + AddAssign + SubAssign + DivAssign + Send + Sync,
+    T: Float + AddAssign + SubAssign + DivAssign,
 {
     let collapse = T::epsilon().sqrt();
+    let mut dots = vec![T::zero(); k + 1];
     for c in 0..k {
         let mut refreshed = false;
         loop {
-            // Norm before the projections, the baseline for collapse detection.
-            let norm_pre = column_norm(v, n, k, c);
+            // Squared column norm before the projection.
+            let mut norm_pre_sq = T::zero();
+            for i in 0..n {
+                let val = v[i * k + c];
+                norm_pre_sq += val * val;
+            }
+            let norm_pre = norm_pre_sq.sqrt();
 
             for _pass in 0..2 {
-                // Batched dot products: acc[p] against previous column p, acc[c]
-                // against v0.
-                let dots = chunked_column_reduce(n, c + 1, |range, acc: &mut [T]| {
-                    for i in range {
-                        let row = &v[i * k..(i + 1) * k];
-                        for p in 0..c {
-                            acc[p] += row[p] * row[c];
-                        }
-                        acc[c] += v0[i] * row[c];
+                for d in dots[..=c].iter_mut() {
+                    *d = T::zero();
+                }
+                for (i, row) in v.chunks_exact(k).enumerate() {
+                    let vc = row[c];
+                    for p in 0..c {
+                        dots[p] += row[p] * vc;
                     }
-                });
-                v.par_chunks_mut(k).enumerate().for_each(|(i, row)| {
-                    let mut delta = dots[c] * v0[i];
+                    dots[c] += v0[i] * vc;
+                }
+                for (i, row) in v.chunks_exact_mut(k).enumerate() {
+                    let v0i = v0[i];
+                    let mut delta = dots[c] * v0i;
                     for p in 0..c {
                         delta += dots[p] * row[p];
                     }
                     row[c] -= delta;
-                });
+                }
             }
 
-            let norm = column_norm(v, n, k, c);
+            let mut norm_sq = T::zero();
+            for i in 0..n {
+                let val = v[i * k + c];
+                norm_sq += val * val;
+            }
+            let norm = norm_sq.sqrt();
             if norm > norm_pre * collapse {
-                v.par_chunks_mut(k).for_each(|row| row[c] /= norm);
+                for i in 0..n {
+                    v[i * k + c] /= norm;
+                }
                 break;
             }
             if refreshed {
-                v.par_chunks_mut(k).for_each(|row| row[c] = T::zero());
+                for i in 0..n {
+                    v[i * k + c] = T::zero();
+                }
                 break;
             }
             refreshed = true;
-            v.par_chunks_mut(k).enumerate().for_each(|(i, row)| {
-                row[c] = splitmix_unit(refresh_seed.wrapping_add((c * n + i) as u64));
-            });
+            for i in 0..n {
+                v[i * k + c] = splitmix_unit(refresh_seed.wrapping_add((c * n + i) as u64));
+            }
         }
     }
 }
@@ -699,7 +706,7 @@ where
 /// Cyclic Jacobi eigensolver for the small dense symmetric matrix `b` (`k * k`,
 /// row-major). On return `b` is nearly diagonal with the eigenvalues on the diagonal
 /// and the returned `k * k` matrix holds the corresponding eigenvectors as columns.
-fn jacobi_eigen<T>(b: &mut [T], k: usize) -> Vec<T>
+pub(crate) fn jacobi_eigen<T>(b: &mut [T], k: usize) -> Vec<T>
 where
     T: Float + Sum,
 {
@@ -904,5 +911,181 @@ mod tests {
             }
         }
 
+    }
+}
+
+/// Property tests of the spectral embedding contract on arbitrary graphs. Kept separate from the
+/// low-level `tests` module above so the helper functions do not clash and the proptest imports
+/// stay scoped.
+#[cfg(test)]
+mod spectral_properties {
+    use proptest::prelude::*;
+
+    use super::{SpectralParams, spectral_embedding};
+
+    /// Dispatches a runtime dimensionality from the proptest generator to the const generic
+    /// solver entry point.
+    fn run_embedding(
+        rows: &[usize],
+        columns: &[u32],
+        values: &[f32],
+        d_out: usize,
+        params: SpectralParams,
+    ) -> Vec<f32> {
+        match d_out {
+            1 => spectral_embedding::<f32, 1>(rows, columns, values, params),
+            2 => spectral_embedding::<f32, 2>(rows, columns, values, params),
+            3 => spectral_embedding::<f32, 3>(rows, columns, values, params),
+            4 => spectral_embedding::<f32, 4>(rows, columns, values, params),
+            _ => unreachable!("the generators only produce d_out 1 through 4"),
+        }
+    }
+
+    /// Builds a symmetric CSR affinity graph from an arbitrary edge list, accumulating duplicate
+    /// pairs and dropping self loops. Nodes untouched by any edge remain isolated.
+    fn symmetric_csr(n: usize, edges: &[(usize, usize, f32)]) -> (Vec<usize>, Vec<u32>, Vec<f32>) {
+        let mut weights = vec![0.0f32; n * n];
+        for &(a, b, weight) in edges {
+            let (i, j) = (a % n, b % n);
+            if i == j {
+                continue;
+            }
+            weights[i * n + j] += weight;
+            weights[j * n + i] += weight;
+        }
+        let mut rows = vec![0usize];
+        let mut columns = Vec::new();
+        let mut values = Vec::new();
+        for i in 0..n {
+            for j in 0..n {
+                if weights[i * n + j] > 0.0 {
+                    columns.push(j as u32);
+                    values.push(weights[i * n + j]);
+                }
+            }
+            rows.push(columns.len());
+        }
+        (rows, columns, values)
+    }
+
+    /// Two cliques of the given sizes and internal weights with no edge between them.
+    fn two_clique_csr(
+        size_a: usize,
+        size_b: usize,
+        w_a: f32,
+        w_b: f32,
+    ) -> (Vec<usize>, Vec<u32>, Vec<f32>) {
+        let n = size_a + size_b;
+        let mut edges = Vec::new();
+        for i in 0..size_a {
+            for j in (i + 1)..size_a {
+                edges.push((i, j, w_a));
+            }
+        }
+        for i in size_a..n {
+            for j in (i + 1)..n {
+                edges.push((i, j, w_b));
+            }
+        }
+        symmetric_csr(n, &edges)
+    }
+
+    proptest::proptest! {
+        /// On any symmetric affinity graph the embedding has the right shape, is finite, has
+        /// zero-mean columns scaled to the target std (or exactly degenerate ones), and is
+        /// bit-for-bit deterministic.
+        #[test]
+        fn embedding_contract_holds_on_arbitrary_graphs(
+            (n, edges, d_out) in (1usize..=40).prop_flat_map(|n| {
+                (
+                    Just(n),
+                    proptest::collection::vec((0..n, 0..n, 0.01f32..10.0), 0..4 * n),
+                    1usize..=4,
+                )
+            }),
+        ) {
+            let (rows, columns, values) = symmetric_csr(n, &edges);
+            let params = SpectralParams::default();
+            let embedding = run_embedding(&rows, &columns, &values, d_out, params);
+
+            prop_assert_eq!(embedding.len(), n * d_out);
+            prop_assert!(embedding.iter().all(|v| v.is_finite()));
+
+            for d in 0..d_out {
+                let column: Vec<f32> = (0..n).map(|i| embedding[i * d_out + d]).collect();
+                let mean = column.iter().sum::<f32>() / n as f32;
+                prop_assert!(mean.abs() < 5e-6, "column {d} mean {mean} is not ~0");
+                let std = (column.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
+                    / n as f32)
+                    .sqrt();
+                prop_assert!(
+                    std < 1e-25 || (std - 1e-4).abs() < 2e-6,
+                    "column {d} std {std} is neither ~1e-4 nor degenerate"
+                );
+            }
+
+            let again = run_embedding(&rows, &columns, &values, d_out, params);
+            prop_assert_eq!(embedding, again);
+        }
+
+        /// Two disconnected cliques of arbitrary sizes and weights must be strictly separated by
+        /// sign in the first embedding column, since the component contrast vector is an exact
+        /// eigenvector of the graph.
+        #[test]
+        fn embedding_separates_disconnected_cliques(
+            size_a in 3usize..=20,
+            size_b in 3usize..=20,
+            w_a in 0.05f32..5.0,
+            w_b in 0.05f32..5.0,
+        ) {
+            let (rows, columns, values) = two_clique_csr(size_a, size_b, w_a, w_b);
+            let embedding =
+                run_embedding(&rows, &columns, &values, 1, SpectralParams::default());
+
+            let sign_a = embedding[0] > 0.0;
+            prop_assert!(
+                embedding[..size_a].iter().all(|&v| (v > 0.0) == sign_a && v != 0.0),
+                "first clique is not on one strict side of zero"
+            );
+            prop_assert!(
+                embedding[size_a..].iter().all(|&v| (v > 0.0) != sign_a && v != 0.0),
+                "second clique is not strictly on the opposite side"
+            );
+        }
+
+        /// The output contract must hold for every valid parameter combination, and the column
+        /// scale must follow the requested `seed_std`.
+        #[test]
+        fn embedding_contract_holds_for_any_params(
+            rounds in 1usize..=6,
+            degree in 1usize..=25,
+            seed_std in 1e-6f64..1e-2,
+        ) {
+            let (rows, columns, values) = two_clique_csr(12, 9, 1.0, 0.5);
+            let n = 21;
+            let params = SpectralParams::new()
+                .rounds(rounds)
+                .degree(degree)
+                .seed_std(seed_std);
+            let embedding = run_embedding(&rows, &columns, &values, 2, params);
+
+            prop_assert_eq!(embedding.len(), n * 2);
+            prop_assert!(embedding.iter().all(|v: &f32| v.is_finite()));
+            for d in 0..2 {
+                let column: Vec<f32> = (0..n).map(|i| embedding[i * 2 + d]).collect();
+                let mean = column.iter().sum::<f32>() / n as f32;
+                let std = (column.iter().map(|v| (v - mean) * (v - mean)).sum::<f32>()
+                    / n as f32)
+                    .sqrt();
+                let target = seed_std as f32;
+                prop_assert!(
+                    std < 1e-12 || (std - target).abs() < target * 0.02,
+                    "column {d} std {std} does not match requested {target}"
+                );
+            }
+
+            let again = run_embedding(&rows, &columns, &values, 2, params);
+            prop_assert_eq!(embedding, again);
+        }
     }
 }

@@ -39,6 +39,7 @@ rayon = "1"
 # interpolation-based `fit_sne` repulsion.
 rustfft = "6"
 realfft = "3"
+thiserror = "1"
 
 # On wasm32-unknown-unknown there is no OS entropy source, getrandom refuses to compile for
 # that target unless the final binary opts into the JavaScript backend. The thread local

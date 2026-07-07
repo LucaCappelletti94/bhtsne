@@ -10,7 +10,7 @@ const DIM: usize = 50;
 const K: usize = 10;
 const SEED: u64 = 123456;
 const THETA: f32 = 0.5;
-const PERPLEXITY: f32 = 30.0;
+const PERPLEXITY: f64 = 30.0;
 const SIZES: &[usize] = &[100_000, 200_000, 500_000, 1_000_000, 2_000_000];
 
 /// Euclidean distance.
